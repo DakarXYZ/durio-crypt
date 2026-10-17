@@ -1,0 +1,8 @@
+{
+  "event_type": "m.room.encrypted",
+  "id": "01KZ0000000000000000000002",
+  "recipient_device": "01KDB1B1B1B1B1B1B1B1B1B1B1",
+  "sender": "01KAAAAAAAAAAAAAAAAAAAAAAA",
+  "sender_device": "01KDA1A1A1A1A1A1A1A1A1A1A1",
+  "type": "E2eeToDevice"
+}

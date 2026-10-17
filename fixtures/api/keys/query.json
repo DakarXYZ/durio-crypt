@@ -1,0 +1,36 @@
+{
+  "method": "POST",
+  "path": "/e2ee/keys/query",
+  "request": {
+    "device_keys": {
+      "@01kaaaaaaaaaaaaaaaaaaaaaaa:stoat.invalid": []
+    }
+  },
+  "response": {
+    "device_keys": {
+      "@01kaaaaaaaaaaaaaaaaaaaaaaa:stoat.invalid": {
+        "01KDA1A1A1A1A1A1A1A1A1A1A1": {
+          "algorithms": [
+            "m.olm.v1.curve25519-aes-sha2",
+            "m.megolm.v1.aes-sha2"
+          ],
+          "device_id": "01KDA1A1A1A1A1A1A1A1A1A1A1",
+          "keys": {
+            "curve25519:01KDA1A1A1A1A1A1A1A1A1A1A1": "fq/jYY3WH6m6KmT7C+QJHZFdcsoV4vQAJ/2f83szJV4",
+            "ed25519:01KDA1A1A1A1A1A1A1A1A1A1A1": "kxFDEwz8yWXncOXsFDLVZeUtAOG6CSINTxp9zQJT2EI"
+          },
+          "signatures": {
+            "@01kaaaaaaaaaaaaaaaaaaaaaaa:stoat.invalid": {
+              "ed25519:01KDA1A1A1A1A1A1A1A1A1A1A1": "wJhvYpy2IVIPp36F9jcvkkgzTkYsPp1Ygt4PzTSz12pRSCoNZShaUKRzFQRHYKRGHIXM1pfZSl1LIvweO9RtDA"
+            }
+          },
+          "user_id": "@01kaaaaaaaaaaaaaaaaaaaaaaa:stoat.invalid"
+        }
+      }
+    },
+    "failures": {},
+    "master_keys": {},
+    "self_signing_keys": {},
+    "user_signing_keys": {}
+  }
+}

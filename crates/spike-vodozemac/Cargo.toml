@@ -1,0 +1,19 @@
+[package]
+name = "spike-vodozemac"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+vodozemac = { version = "=0.11.1", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+# only for the shared fakeserver / ids (not counted as own-layer code)
+spike-msc = { path = "../spike-msc" }
+ruma = { version = "=0.17.0" }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }

@@ -1,0 +1,22 @@
+{
+  "method": "PUT",
+  "path": "/e2ee/to_device/da6c9e7d43e342938a6e1ebb35fe58d5",
+  "request": {
+    "messages": {
+      "@01kbbbbbbbbbbbbbbbbbbbbbbb:stoat.invalid": {
+        "*": {
+          "action": "request",
+          "body": {
+            "algorithm": "m.megolm.v1.aes-sha2",
+            "room_id": "!01kccccccccccccccccccccccc:stoat.invalid",
+            "session_id": "ljW7sQ9uEy9bA/xCi2QhFeJCLZQMNngA5Z/I/XYA4ek"
+          },
+          "request_id": "da6c9e7d43e342938a6e1ebb35fe58d5",
+          "requesting_device_id": "01KDB2B2B2B2B2B2B2B2B2B2B2"
+        }
+      }
+    },
+    "type": "m.room_key_request"
+  },
+  "response": {}
+}

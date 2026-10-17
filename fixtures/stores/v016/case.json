@@ -1,0 +1,24 @@
+{
+  "created_with": "matrix-sdk-crypto 0.16.0 / matrix-sdk-sqlite 0.16.0 (schema v13)",
+  "curve25519": "PIOX75QltpKUgClEPByhPToLyjE8tx/9p2DRQsyCgh4",
+  "device_id": "01KDA1A1A1A1A1A1A1A1A1A1A1",
+  "ed25519": "pi5eMFEJnKBGCU6JvQ5z1zWTh+rID5Mmi/bXF+NLhTU",
+  "event": {
+    "content": {
+      "algorithm": "m.megolm.v1.aes-sha2",
+      "ciphertext": "AwgAEtABx5fFG+XJZqwMJid8Oetzt40tb+81vO/gQJKty9OCETPWP6em+6vb5KW3mnW3mZ9cmx6JtwL9XyUfPUvJOWr7vZ5Rl0SYqLVGs7YQSI/+opMKRbd9dhU4uAMYUncGpBFXWWmpSvIZJWWeJAbLqIziMWuAE7jFsbjscY4QmAomqHICIJ9RPAQxCK2ye30eWJ+a2UoubwmpXxHMF8esSVZ/VkMaZv7Wc/ODBMcrJC9NS2PFtOhUSlkE451oS4YIpMIy9fxtccTN4bDItxexdfWczPP+rsyHQztiC0B4QaOTPFFzDh+NBFwdF5a1xQ9Vb5wBItsJSy9IOftH5KqsK/GIRvCGU2QM7f1LfU+4CKcdS7nuaqAL2y8gBg",
+      "device_id": "01KDB1B1B1B1B1B1B1B1B1B1B1",
+      "sender_key": "EJ91q1tvNx6xEkCmtehzaBQbIG+0TFXf5t2EY0h2EBc",
+      "session_id": "yejgC2NVIMl0FIrbwR3wQNeXevJe0s3UgFk1s/+72Aw"
+    },
+    "event_id": "$01KZ0000000000000000000099",
+    "origin_server_ts": 1760700000000,
+    "room_id": "!01kccccccccccccccccccccccc:stoat.invalid",
+    "sender": "@01kbbbbbbbbbbbbbbbbbbbbbbb:stoat.invalid",
+    "type": "m.room.encrypted"
+  },
+  "plaintext": "сообщение из 0.16",
+  "room_id": "!01kccccccccccccccccccccccc:stoat.invalid",
+  "store_key_hex": "42 x 32",
+  "user_id": "@01kaaaaaaaaaaaaaaaaaaaaaaa:stoat.invalid"
+}

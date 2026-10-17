@@ -1,0 +1,22 @@
+{
+  "method": "POST",
+  "path": "/e2ee/keys/upload",
+  "request": {
+    "fallback_keys": {
+      "signed_curve25519:AAAAAAAAAAA": {
+        "fallback": true,
+        "key": "Cc5ALs9kvguM/tpa+0DPyOoZJ+OQJSvf5/Sjsb6/4DY",
+        "signatures": {
+          "@01kaaaaaaaaaaaaaaaaaaaaaaa:stoat.invalid": {
+            "ed25519:01KDA1A1A1A1A1A1A1A1A1A1A1": "OVirPSlIbQQbKcYYyRau+WOY8ECYPmPoIEQEtlOJ2WzUtK4wlXGIvDROyFv3dyhLEqA9XitiGWON9Og8cY4LDg"
+          }
+        }
+      }
+    }
+  },
+  "response": {
+    "one_time_key_counts": {
+      "signed_curve25519": 50
+    }
+  }
+}

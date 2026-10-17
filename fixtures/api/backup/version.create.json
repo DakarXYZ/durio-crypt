@@ -1,0 +1,14 @@
+{
+  "method": "POST",
+  "path": "/e2ee/backup/version",
+  "request": {
+    "algorithm": "m.megolm_backup.v1.curve25519-aes-sha2",
+    "auth_data": {
+      "public_key": "aeNGv7YiAj/sloAyGklf98uek+65XKdvQ9ql+cWmJl0",
+      "signatures": {}
+    }
+  },
+  "response": {
+    "version": "01KZ0000000000000000000001"
+  }
+}

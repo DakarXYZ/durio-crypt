@@ -1,0 +1,10 @@
+{
+  "method": "POST",
+  "path": "/e2ee/to_device/ack",
+  "request": {
+    "ids": [
+      "01KZ0000000000000000000002"
+    ]
+  },
+  "response": null
+}

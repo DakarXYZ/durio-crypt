@@ -1,0 +1,42 @@
+# Size probe (CR-01 measurements): a thin wrapper that keeps the OlmMachine API
+# surface our adapter uses reachable, built as wasm (wasm-bindgen) and as an
+# Android arm64 cdylib. Separate workspace so target-specific deps and size
+# profiles don't leak into the spike.
+[workspace]
+
+[package]
+name = "size-probe"
+version = "0.0.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[features]
+wasm = ["dep:wasm-bindgen", "dep:wasm-bindgen-futures", "matrix-sdk-crypto/js"]
+native = ["dep:tokio"]
+sqlite = ["dep:matrix-sdk-sqlite"]
+indexeddb = ["dep:matrix-sdk-indexeddb"]
+
+[dependencies]
+matrix-sdk-crypto = { version = "=0.19.1", features = ["automatic-room-key-forwarding"] }
+ruma = { version = "=0.17.0", features = ["client-api-c"] }
+serde_json = "1"
+http = "1"
+wasm-bindgen = { version = "=0.2.129", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
+tokio = { version = "1", features = ["rt"], optional = true }
+matrix-sdk-sqlite = { version = "=0.19.1", default-features = false, features = ["crypto-store", "bundled"], optional = true }
+matrix-sdk-indexeddb = { version = "=0.19.1", default-features = false, features = ["e2e-encryption"], optional = true }
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+
+[profile.release-wasm]
+inherits = "release"
+panic = "abort"

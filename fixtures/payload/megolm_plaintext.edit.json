@@ -1,0 +1,13 @@
+{
+  "content": {
+    "client_nonce": "AAAAAAAAAAAAAAAAAAAAAA",
+    "content": "исправленный текст",
+    "edit_of": "01KZ0000000000000000000005",
+    "edit_seq": 1,
+    "pad": "000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+    "ts": 1760700000000,
+    "v": 1
+  },
+  "room_id": "!01kccccccccccccccccccccccc:stoat.invalid",
+  "type": "stoat.message"
+}

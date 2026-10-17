@@ -1,0 +1,19 @@
+# Separate workspace: creates a matrix-sdk-sqlite 0.16 crypto store snapshot
+# for the migration check (criterion 4). Different rusqlite/libsqlite3-sys
+# than the main workspace, so it cannot live there.
+[workspace]
+
+[package]
+name = "store-016"
+version = "0.0.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+matrix-sdk-crypto = "=0.16.0"
+matrix-sdk-sqlite = { version = "=0.16.0", default-features = false, features = ["crypto-store", "bundled"] }
+ruma = { version = "=0.14.0", features = ["client-api-c"] }
+serde_json = "1"
+http = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

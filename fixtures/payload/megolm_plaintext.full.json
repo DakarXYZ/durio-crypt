@@ -1,0 +1,68 @@
+{
+  "content": {
+    "attachments": [
+      {
+        "content_type": "image/jpeg",
+        "file": {
+          "hashes": {
+            "sha256": "Ax+q/5xA52toS81BJMB/2D9Ubmom9kSq4NJaOHIxZIo"
+          },
+          "iv": "enhdwylIfxsAAAAAAAAAAA",
+          "key": {
+            "alg": "A256CTR",
+            "ext": true,
+            "k": "-mikHFIZ5ePUAWRkT57QdmoPnuCJxFx0V63wc88R5jQ",
+            "key_ops": [
+              "decrypt",
+              "encrypt"
+            ],
+            "kty": "oct"
+          },
+          "v": "v2"
+        },
+        "id": "01KFILE0000000000000000001",
+        "metadata": {
+          "height": 1080,
+          "type": "Image",
+          "width": 1920
+        },
+        "name": "отпуск.jpg",
+        "size": 123456,
+        "spoiler": true,
+        "thumbnail": {
+          "file": {
+            "hashes": {
+              "sha256": "hkBqF07aVIHDGBCQub8Lm6rmuYp90WHvwiIiuN2Kvas"
+            },
+            "iv": "2hdBkvuZEKYAAAAAAAAAAA",
+            "key": {
+              "alg": "A256CTR",
+              "ext": true,
+              "k": "PUwrhwe5CgD_x1moz-iUhQx9AG6k7Ul7dw6tbYVemgk",
+              "key_ops": [
+                "decrypt",
+                "encrypt"
+              ],
+              "kty": "oct"
+            },
+            "v": "v2"
+          },
+          "height": 180,
+          "id": "01KFILE0000000000000000002",
+          "width": 320
+        }
+      }
+    ],
+    "client_nonce": "q83vEjRWeJCrze8SNFZ4kA",
+    "content": "Смотри фото из отпуска **жирным**",
+    "edit_seq": 0,
+    "in_reply_to": [
+      "01KZ0000000000000000000004"
+    ],
+    "pad": "00000000000000000000000000000000000000000000000000000000000000000000000",
+    "ts": 1760700000000,
+    "v": 1
+  },
+  "room_id": "!01kccccccccccccccccccccccc:stoat.invalid",
+  "type": "stoat.message"
+}

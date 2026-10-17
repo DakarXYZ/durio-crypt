@@ -1,0 +1,11 @@
+{
+  "method": "GET",
+  "path": "/e2ee/keys/count",
+  "request": null,
+  "response": {
+    "device_unused_fallback_key_types": [],
+    "one_time_key_counts": {
+      "signed_curve25519": 50
+    }
+  }
+}

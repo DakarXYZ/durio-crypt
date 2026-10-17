@@ -1,0 +1,39 @@
+{
+  "method": "POST",
+  "path": "/e2ee/keys/claim",
+  "request": {
+    "one_time_keys": {
+      "@01kbbbbbbbbbbbbbbbbbbbbbbb:stoat.invalid": {
+        "01KDB1B1B1B1B1B1B1B1B1B1B1": "signed_curve25519",
+        "01KDB2B2B2B2B2B2B2B2B2B2B2": "signed_curve25519"
+      }
+    }
+  },
+  "response": {
+    "failures": {},
+    "one_time_keys": {
+      "@01kbbbbbbbbbbbbbbbbbbbbbbb:stoat.invalid": {
+        "01KDB1B1B1B1B1B1B1B1B1B1B1": {
+          "signed_curve25519:AAAAAAAAAA0": {
+            "key": "rhJL77dQxR73O4H+9rBDZ6Ht0Z+S+1SeX+1B08ZsfhQ",
+            "signatures": {
+              "@01kbbbbbbbbbbbbbbbbbbbbbbb:stoat.invalid": {
+                "ed25519:01KDB1B1B1B1B1B1B1B1B1B1B1": "/qkkKz3Xz8aMwaAH1zbTTxSww1TnmhDqpY8j/sHnm9k2bsEzJ+fEr1cVoxGOwWvqnRJFZ0WvrWJW52sS7sI1CQ"
+              }
+            }
+          }
+        },
+        "01KDB2B2B2B2B2B2B2B2B2B2B2": {
+          "signed_curve25519:AAAAAAAAAA0": {
+            "key": "7aObhKdf/RJ3zPoFiL+3SJeyn8sGAcfaIotGmQ5lmTQ",
+            "signatures": {
+              "@01kbbbbbbbbbbbbbbbbbbbbbbb:stoat.invalid": {
+                "ed25519:01KDB2B2B2B2B2B2B2B2B2B2B2": "0WzZbz7EmGnGZCofAfSd4kbfzjVZypLi6RQYerhtV2H8B8aBXrLniC/B3+3ZxwTt9TLhii0WBZE6x643zpVuCA"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

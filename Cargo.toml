@@ -1,0 +1,27 @@
+[workspace]
+resolver = "3"
+members = ["crates/spike-msc", "crates/spike-vodozemac"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+license = "Apache-2.0"
+rust-version = "1.96"
+publish = false
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+
+[profile.release-size]
+inherits = "release"
+opt-level = "z"
+panic = "abort"
+
+[profile.dev]
+# keeps rustc memory in Docker Desktop in check
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
