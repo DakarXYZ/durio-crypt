@@ -1,0 +1,10 @@
+# CR-15: the live testkit profile (scripts/testkit-backend.sh test). The
+# backend keeps its rate limits, so scenarios run a few at a time.
+[profile.testkit]
+test-threads = 3
+slow-timeout = { period = "60s", terminate-after = 6 }
+fail-fast = false
+
+[profile.testkit.junit]
+# target/nextest/testkit/junit.xml
+path = "junit.xml"
