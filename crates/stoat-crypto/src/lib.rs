@@ -12,6 +12,7 @@
 //!
 //! Never logs; errors carry codes, not content.
 
+mod binding;
 mod error;
 mod ids;
 #[cfg(not(target_arch = "wasm32"))]

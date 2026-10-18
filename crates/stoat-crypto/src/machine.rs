@@ -36,6 +36,7 @@ use stoat_crypto_proto::api::{KeysCountResponse, ToDeviceMessage};
 use stoat_crypto_proto::envelope::{EncryptedEnvelope, MAX_CIPHERTEXT_LEN};
 use stoat_crypto_proto::payload::{EVENT_TYPE, MegolmPlaintext, MessagePayload, PayloadError};
 
+use crate::binding::{self, Seen};
 use crate::error::{CryptoError, DecryptError, Result};
 use crate::ids;
 use crate::requests::{self, OutgoingRequest, RequestKind, Response};
@@ -44,8 +45,6 @@ use crate::types::*;
 
 /// Prefix of our values in the library's custom-value table
 const KV_CHANNEL: &str = "stoat.channel.";
-const KV_REPLAY: &str = "stoat.replay.";
-const KV_EDIT: &str = "stoat.edit.";
 
 /// Persisted members and settings of an encrypted channel
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -53,14 +52,6 @@ struct ChannelState {
     /// Member user ids (ULIDs), self included
     members: BTreeSet<String>,
     settings: ChannelEncryptionSettings,
-}
-
-/// Last shown version of a message (CR-19 edits)
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct EditRecord {
-    edit_seq: u64,
-    session_id: String,
-    message_index: u32,
 }
 
 fn decryption_settings() -> DecryptionSettings {
@@ -94,8 +85,8 @@ struct Inner {
     send_locks: SyncMutex<HashMap<String, Arc<Mutex<()>>>>,
     /// in-flight `keys/claim`: never two at once (each claim burns OTKs)
     claim: Mutex<Option<OutgoingRequest>>,
-    /// CR-19 tables: read-modify-write under one lock
-    replay: Mutex<()>,
+    /// CR-19 tables
+    binding: binding::Tables,
     /// dropped last: the store must close before the lock is released
     _opened_lock: StoreLockHolder,
 }
@@ -149,7 +140,7 @@ impl CryptoMachine {
                 channels: Mutex::new(HashMap::new()),
                 send_locks: SyncMutex::new(HashMap::new()),
                 claim: Mutex::new(None),
-                replay: Mutex::new(()),
+                binding: binding::Tables::default(),
                 _opened_lock: StoreLockHolder {
                     #[cfg(not(target_arch = "wasm32"))]
                     _lock: lock,
@@ -649,11 +640,23 @@ impl CryptoMachine {
         let session_id = info.session_id().unwrap_or(&env.session_id).to_owned();
         let sender_device = info.sender_device.as_ref().map(|d| d.to_string());
 
-        let (is_replay, stale_edit) = self
-            .check_replay_and_edit(&message.message_id, &session_id, index, payload.edit_seq)
+        let channel = message.channel_id.to_ascii_uppercase();
+        let binding = self
+            .inner
+            .binding
+            .check(
+                olm.store(),
+                Seen {
+                    channel: &channel,
+                    message_id: &message.message_id,
+                    session_id: &session_id,
+                    index,
+                    edit_seq: payload.edit_seq,
+                },
+            )
             .await
             .map_err(|_| DecryptError::Internal)?;
-        let edit_mismatch = payload.edit_of.as_ref().is_some_and(|o| o != &message.message_id);
+        let edit_mismatch = binding::edit_mismatch(&message.message_id, payload.edit_of.as_deref(), payload.edit_seq);
         let reply_mismatch = payload.in_reply_to != message.replies;
 
         // shield (ADR 0001): backup / forwarded keys are never better than
@@ -686,8 +689,8 @@ impl CryptoMachine {
             verification,
             session_id,
             message_index: index,
-            is_replay,
-            stale_edit,
+            is_replay: binding.is_replay,
+            stale_edit: binding.stale_edit,
             edit_mismatch,
             reply_mismatch,
         })
@@ -703,48 +706,6 @@ impl CryptoMachine {
             out.push(self.decrypt(m).await);
         }
         out
-    }
-
-    /// CR-19 (early, persisted; to be reviewed in block 3B):
-    /// * `(session, index)` seen under another message id → replay;
-    /// * per message the highest `edit_seq` shown; an older version with
-    ///   another ciphertext → stale edit. Re-decrypting the same ciphertext
-    ///   (history reload) is neither.
-    async fn check_replay_and_edit(
-        &self,
-        message_id: &str,
-        session_id: &str,
-        index: u32,
-        edit_seq: u64,
-    ) -> std::result::Result<(bool, bool), matrix_sdk_crypto::store::CryptoStoreError> {
-        let _guard = self.inner.replay.lock().await;
-        let store = self.olm().store();
-        let replay_key = format!("{KV_REPLAY}{session_id}.{index}");
-        let is_replay = match store.get_value::<String>(&replay_key).await? {
-            Some(prev) => prev != message_id,
-            None => {
-                store.set_value(&replay_key, &message_id).await?;
-                false
-            }
-        };
-        if is_replay {
-            return Ok((true, false));
-        }
-        let edit_key = format!("{KV_EDIT}{message_id}");
-        let stale = match store.get_value::<EditRecord>(&edit_key).await? {
-            Some(r) if r.session_id == session_id && r.message_index == index => false,
-            Some(r) if edit_seq <= r.edit_seq => true,
-            _ => {
-                let record = EditRecord {
-                    edit_seq,
-                    session_id: session_id.to_owned(),
-                    message_index: index,
-                };
-                store.set_value(&edit_key, &record).await?;
-                false
-            }
-        };
-        Ok((false, stale))
     }
 
     // ----------------------------------------------------------- devices

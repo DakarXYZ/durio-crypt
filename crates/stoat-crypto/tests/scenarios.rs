@@ -401,3 +401,57 @@ async fn failed_requests_are_retried() {
     b.sync().await;
     assert_eq!(b.read(&last(&srv, &dm)).await, "eventually");
 }
+
+/// CR-19: an edit is an in-place PATCH — it names its own message and has
+/// a sequence; anything else is flagged. Rollbacks stay flagged after a
+/// restart (the tables are in the store).
+#[tokio::test]
+async fn cr19_edit_binding() {
+    let srv = server();
+    let dir = tempfile::tempdir().unwrap();
+    let a = Device::login(&srv, "A", "A1").await;
+    let mut b = Device::login_sqlite(&srv, "B", "B1", dir.path()).await;
+    let dm = channel(&srv, "D", &[&a, &b]).await;
+    let id = a.send(&dm, &text("v0")).await;
+    b.sync().await;
+    let v0 = last(&srv, &dm);
+    assert!(b.decrypt(&v0).await.unwrap().is_clean());
+
+    let mut edits = Vec::new();
+    for seq in 1..=2 {
+        let mut e = text(&format!("v{seq}"));
+        e.edit_of = Some(id.clone());
+        e.edit_seq = seq;
+        let env = a.encrypt(&dm, &e).await;
+        srv.lock()
+            .unwrap()
+            .message_edit(&a.auth, &dm, &id, env.to_value())
+            .unwrap();
+        let shown = b.decrypt(&last(&srv, &dm)).await.unwrap();
+        assert!(shown.is_clean(), "{shown:?}");
+        edits.push(last(&srv, &dm));
+    }
+    b.restart().await;
+    assert!(b.decrypt(&edits[1]).await.unwrap().is_clean(), "latest, reloaded");
+    assert!(b.decrypt(&edits[0]).await.unwrap().stale_edit, "older edit");
+    assert!(b.decrypt(&v0).await.unwrap().stale_edit, "original");
+
+    // malformed edits
+    for (edit_of, seq) in [
+        (Some("01KZOTHER00000000000000000"), 3),
+        (Some(id.as_str()), 0),
+        (None, 4),
+    ] {
+        let mut e = text("odd");
+        e.edit_of = edit_of.map(str::to_owned);
+        e.edit_seq = seq;
+        let env = a.encrypt(&dm, &e).await;
+        srv.lock()
+            .unwrap()
+            .message_edit(&a.auth, &dm, &id, env.to_value())
+            .unwrap();
+        let shown = b.decrypt(&last(&srv, &dm)).await.unwrap();
+        assert!(shown.edit_mismatch, "{edit_of:?} {seq}");
+        assert!(!shown.is_clean());
+    }
+}
