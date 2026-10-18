@@ -6,8 +6,9 @@
 //! branches on is typed.
 //!
 //! Kotlin's generated `toString()` prints every field: never log
-//! `DecryptedMessage` (plaintext), `StoreConfig` (store key) or
-//! `RecoverySetup` (recovery key).
+//! `DecryptResult`/`DecryptedMessage` (plaintext, attachment keys),
+//! `StoreConfig` (store key), `RecoverySetup` (recovery key), `KeyExport` or
+//! `EncryptedAttachment` (`file_json` holds the key) — crate docs.
 
 use std::fmt;
 use std::path::PathBuf;

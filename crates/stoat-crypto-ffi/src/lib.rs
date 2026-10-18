@@ -21,8 +21,11 @@
 //!   with zeros (best effort: the JVM may have copied it). The recovery key
 //!   crosses to Kotlin once, as `RecoverySetup.recovery_key`.
 //!
-//! Kotlin's generated `toString()` prints every field: never log
-//! `DecryptedMessage`, `StoreConfig` or `RecoverySetup`.
+//! Kotlin's generated `toString()` prints every field and cannot be
+//! overridden: never log `DecryptResult` / `DecryptedMessage` (plaintext and
+//! attachment keys), `RecoverySetup` (recovery key), `EncryptedAttachment`
+//! (`fileJson` holds the AES key) or `KeyExport`. (`StoreConfig.Sqlite`
+//! prints its `ByteArray` key only as an array reference; still keep it out.)
 
 // CR-16: no panics on paths the host calls (the runtime fence catches the
 // library's, these lints keep ours out)
