@@ -442,3 +442,86 @@ fn injected_failures() {
     assert_eq!(post(&mut s, &a, api::paths::KEYS_QUERY, body.clone()).status, 502);
     assert_eq!(post(&mut s, &a, api::paths::KEYS_QUERY, body).status, 200);
 }
+
+#[test]
+fn backup_version_by_id_and_limits() {
+    let mut s = setup();
+    let a = Auth::new(A, A1);
+    let create = fixture("api/backup/version.create.json")["request"].clone();
+    let v1 = post(&mut s, &a, api::paths::BACKUP_VERSION, create.clone()).body["version"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let path = api::paths::backup_version(&v1);
+    assert_eq!(s.handle(&a, "GET", &path, None).body["version"], v1);
+    // signatures may change, the key and the algorithm may not
+    let mut update = create.clone();
+    update["auth_data"]["signatures"] = json!({ "x": {} });
+    assert_eq!(s.handle(&a, "PUT", &path, Some(&update)).status, 204);
+    let mut other_key = create.clone();
+    other_key["auth_data"]["public_key"] = json!("AAAA");
+    assert_eq!(s.handle(&a, "PUT", &path, Some(&other_key)).status, 400);
+    // more than 1000 sessions in one request
+    let sessions: Map<String, Value> = (0..1001)
+        .map(|i| {
+            (
+                format!("s{i}"),
+                json!({ "first_message_index": 0, "forwarded_count": 0, "is_verified": false, "session_data": {} }),
+            )
+        })
+        .collect();
+    let room = ids::room_id(C).unwrap();
+    let body = json!({ "rooms": { room: { "sessions": sessions } } });
+    assert_eq!(
+        s.handle(&a, "PUT", &api::paths::backup_keys(&v1), Some(&body)).status,
+        422
+    );
+    // delete needs a ticket; afterwards the version is gone
+    assert_eq!(s.handle(&a, "DELETE", &path, None).status, 401);
+    s.grant_mfa_ticket(A);
+    assert_eq!(s.handle(&a, "DELETE", &path, None).status, 204);
+    assert_eq!(s.handle(&a, "GET", &path, None).status, 404);
+    assert_eq!(s.handle(&a, "GET", api::paths::BACKUP_VERSION, None).status, 404);
+}
+
+#[test]
+fn secrets_like_the_backend() {
+    let mut s = setup();
+    let a = Auth::new(A, A1);
+    let path = api::paths::secret(&api::secrets::key("ABCDEF"));
+    assert_eq!(path, "/e2ee/secrets/m.secret_storage.key.ABCDEF");
+    assert_eq!(s.handle(&a, "GET", &path, None).status, 404);
+    let content = json!({ "algorithm": "m.secret_storage.v1.aes-hmac-sha2", "iv": "x" });
+    assert_eq!(s.handle(&a, "PUT", &path, Some(&content)).status, 204);
+    assert_eq!(s.handle(&a, "GET", &path, None).body, content);
+    assert_eq!(s.handle(&Auth::new(B, B1), "GET", &path, None).status, 404);
+
+    let long = api::paths::secret(&api::secrets::key(&"k".repeat(65)));
+    for (p, body, status) in [
+        ("/e2ee/secrets/m.anything", json!({}), 400),
+        (long.as_str(), json!({}), 400),
+        ("/e2ee/secrets/m.megolm_backup.v1", json!("text"), 400),
+        (
+            "/e2ee/secrets/m.megolm_backup.v1",
+            json!({ "data": "x".repeat(16_384) }),
+            422,
+        ),
+        ("/e2ee/secrets/m.cross_signing.master", json!({}), 401),
+    ] {
+        assert_eq!(s.handle(&a, "PUT", p, Some(&body)).status, status, "{p}");
+    }
+    s.grant_mfa_ticket(A);
+    assert_eq!(
+        s.handle(&a, "PUT", "/e2ee/secrets/m.cross_signing.master", Some(&json!({})))
+            .status,
+        204
+    );
+    for i in 0..30 {
+        let p = api::paths::secret(&api::secrets::key(&format!("K{i}")));
+        assert_eq!(s.handle(&a, "PUT", &p, Some(&json!({}))).status, 204, "{i}");
+    }
+    let p = api::paths::secret(&api::secrets::key("ONE_TOO_MANY"));
+    assert_eq!(s.handle(&a, "PUT", &p, Some(&json!({}))).status, 400);
+    // replacing an existing one is fine at the limit
+    assert_eq!(s.handle(&a, "PUT", &path, Some(&json!({}))).status, 204);
+}

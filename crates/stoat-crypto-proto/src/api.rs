@@ -31,6 +31,7 @@ pub mod paths {
     pub const TO_DEVICE_ACK: &str = "/e2ee/to_device/ack";
     pub const BACKUP_VERSION: &str = "/e2ee/backup/version";
     pub const BACKUP_KEYS: &str = "/e2ee/backup/keys";
+    pub const SECRETS: &str = "/e2ee/secrets";
 
     /// `PUT /e2ee/to_device/<txn_id>`
     pub fn to_device_send(txn_id: &str) -> String {
@@ -40,6 +41,16 @@ pub mod paths {
     /// `GET /e2ee/to_device?limit=N`
     pub fn to_device_fetch(limit: usize) -> String {
         format!("{TO_DEVICE}?limit={limit}")
+    }
+
+    /// `GET|PUT|DELETE /e2ee/backup/version/<v>`
+    pub fn backup_version(version: &str) -> String {
+        format!("{BACKUP_VERSION}/{}", super::encode_component(version))
+    }
+
+    /// `GET|PUT /e2ee/secrets/<type>`
+    pub fn secret(secret_type: &str) -> String {
+        format!("{SECRETS}/{}", super::encode_component(secret_type))
     }
 
     /// `PUT|GET /e2ee/backup/keys?version=V`
@@ -55,6 +66,25 @@ pub const MAX_TO_DEVICE_ACK: usize = 100;
 pub const MAX_DEVICES_PER_REQUEST: usize = 256;
 /// Maximum one-time keys stored per device on the server (C26)
 pub const MAX_OTK_PER_DEVICE: usize = 100;
+/// Maximum sessions in one `PUT /e2ee/backup/keys` (BE-08)
+pub const MAX_BACKUP_KEYS_PER_REQUEST: usize = 1_000;
+/// Maximum secrets stored per user (BE-08)
+pub const MAX_SECRETS: usize = 32;
+
+/// Secret storage entries (`/e2ee/secrets/<type>`, Matrix names)
+pub mod secrets {
+    /// `{"key": <key id>}`: the key the other secrets are encrypted with
+    pub const DEFAULT_KEY: &str = "m.secret_storage.default_key";
+    /// Prefix of a key description, followed by the key id
+    pub const KEY_PREFIX: &str = "m.secret_storage.key.";
+    /// The backup decryption key, encrypted with the secret storage key
+    pub const MEGOLM_BACKUP_V1: &str = "m.megolm_backup.v1";
+
+    /// `m.secret_storage.key.<id>`
+    pub fn key(id: &str) -> String {
+        format!("{KEY_PREFIX}{id}")
+    }
+}
 
 /// Percent-encode everything outside RFC 3986 "unreserved"
 fn encode_component(s: &str) -> String {

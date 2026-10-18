@@ -26,7 +26,13 @@
 //!   joining or leaving a group does **not** publish it;
 //! * backup: only `m.megolm_backup.v1.curve25519-aes-sha2`; a second version
 //!   needs an MFA ticket (401 otherwise); keys go to the current version only
-//!   (409 `BackupVersionMismatch` with `current_version`); the better key wins.
+//!   (409 `BackupVersionMismatch` with `current_version`), at most 1000 per
+//!   request (422); the better key wins; `PUT version/<v>` cannot change the
+//!   algorithm or the public key (400); `DELETE version/<v>` needs a ticket;
+//! * secrets: whitelisted types (`m.megolm_backup.v1`, `m.cross_signing.*`,
+//!   `m.secret_storage.default_key`, `m.secret_storage.key.<id ≤ 64>`), JSON
+//!   objects up to `max_secret_bytes`, at most 32 per user, cross-signing
+//!   ones only with an MFA ticket; opaque to the server.
 //!
 //! Visibility (who may query, claim and message whom) is modelled as sharing a
 //! channel; friendships are not modelled.
@@ -37,7 +43,7 @@ use std::sync::{Arc, Mutex};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use serde_json::{Map, Value, json};
-use stoat_crypto_proto::api::{self, KeyBackupData, MAX_OTK_PER_DEVICE};
+use stoat_crypto_proto::api::{self, KeyBackupData, MAX_BACKUP_KEYS_PER_REQUEST, MAX_OTK_PER_DEVICE, MAX_SECRETS};
 use stoat_crypto_proto::envelope::EncryptedEnvelope;
 use stoat_crypto_proto::{BACKUP_ALGORITHM_MEGOLM_V1, KEY_ALGORITHM_SIGNED_CURVE25519, ids};
 
@@ -50,6 +56,8 @@ pub const MAX_PENDING_TO_DEVICE: usize = 10_000;
 pub const MAX_TO_DEVICE_BATCH: usize = 1_000;
 /// Backend default `max_request_bytes`
 pub const MAX_REQUEST_BYTES: usize = 4_194_304;
+/// Backend default `max_secret_bytes`
+pub const MAX_SECRET_BYTES: usize = 16_384;
 
 /// Authenticated caller: the session token resolves to (user, session = device)
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -207,7 +215,9 @@ pub struct FakeServer {
     /// pending WebSocket events per device
     ws: BTreeMap<String, Vec<Value>>,
     backups: BTreeMap<String, Backup>,
-    /// users holding an MFA ticket for the next backup version
+    /// (user, type) → secret storage entry
+    secrets: BTreeMap<(String, String), Value>,
+    /// users holding an MFA ticket for their next destructive call
     mfa: HashSet<String>,
     pub faults: Faults,
     rng: StdRng,
@@ -218,6 +228,7 @@ pub struct FakeServer {
     pub max_pending_to_device: usize,
     pub max_to_device_batch: usize,
     pub max_request_bytes: usize,
+    pub max_secret_bytes: usize,
 }
 
 impl Default for FakeServer {
@@ -242,6 +253,7 @@ impl FakeServer {
             messages: Default::default(),
             ws: Default::default(),
             backups: Default::default(),
+            secrets: Default::default(),
             mfa: Default::default(),
             faults: Faults::default(),
             rng: StdRng::seed_from_u64(seed),
@@ -251,6 +263,7 @@ impl FakeServer {
             max_pending_to_device: MAX_PENDING_TO_DEVICE,
             max_to_device_batch: MAX_TO_DEVICE_BATCH,
             max_request_bytes: MAX_REQUEST_BYTES,
+            max_secret_bytes: MAX_SECRET_BYTES,
         }
     }
 
@@ -318,6 +331,11 @@ impl FakeServer {
             ("GET", api::paths::BACKUP_VERSION) => self.backup_version_get(auth),
             ("PUT", api::paths::BACKUP_KEYS) => self.backup_keys_put(auth, param("version").as_deref(), body),
             ("GET", api::paths::BACKUP_KEYS) => self.backup_keys_get(auth, param("version").as_deref()),
+            (m, p) if p.starts_with("/e2ee/backup/version/") => {
+                self.backup_version_by_id(auth, m, &p["/e2ee/backup/version/".len()..], body)
+            }
+            ("GET", p) if p.starts_with("/e2ee/secrets/") => self.secret_get(auth, &p["/e2ee/secrets/".len()..]),
+            ("PUT", p) if p.starts_with("/e2ee/secrets/") => self.secret_put(auth, &p["/e2ee/secrets/".len()..], body),
             _ => error(404, "NotFound"),
         }
     }
@@ -706,6 +724,9 @@ impl FakeServer {
         if !body["auth_data"].get("public_key").is_some_and(Value::is_string) {
             return invalid("auth_data");
         }
+        if body["auth_data"].to_string().len() > self.max_secret_bytes {
+            return error(422, "PayloadTooLarge");
+        }
         // a stolen session token must not be able to wipe the backup
         if self.current_backup(&auth.user).is_some() && !self.mfa.remove(&auth.user) {
             return error(401, "InvalidToken");
@@ -753,6 +774,9 @@ impl FakeServer {
         let Ok(backup) = serde_json::from_value::<api::KeysBackup>(body.clone()) else {
             return invalid("rooms");
         };
+        if backup.rooms.values().map(|r| r.sessions.len()).sum::<usize>() > MAX_BACKUP_KEYS_PER_REQUEST {
+            return error(422, "PayloadTooLarge");
+        }
         let mut keys = Vec::new();
         for (room, r) in backup.rooms {
             if ids::channel_ulid(&room).is_none() {
@@ -810,9 +834,130 @@ impl FakeServer {
         Response::ok(json!({ "rooms": rooms }))
     }
 
-    /// Let the next `POST /backup/version` of `user` pass (MFA ticket)
+    /// `GET|PUT|DELETE /e2ee/backup/version/<v>`: only versions not
+    /// replaced or deleted
+    fn backup_version_by_id(&mut self, auth: &Auth, method: &str, version: &str, body: &Value) -> Response {
+        let Some((algorithm, auth_data, _)) = self
+            .backups
+            .get(&auth.user)
+            .and_then(|b| b.versions.get(version))
+            .filter(|v| !v.2)
+            .cloned()
+        else {
+            return error(404, "NotFound");
+        };
+        match method {
+            "GET" => {
+                let b = &self.backups[&auth.user];
+                let count = b.keys.keys().filter(|k| k.0 == version).count();
+                Response::ok(json!({
+                    "algorithm": algorithm,
+                    "auth_data": auth_data,
+                    "count": count,
+                    "etag": b.etag.to_string(),
+                    "version": version,
+                }))
+            }
+            // auth_data only (signatures): algorithm and key are fixed
+            "PUT" => {
+                if body.get("algorithm").and_then(Value::as_str) != Some(algorithm.as_str()) {
+                    return invalid("algorithm");
+                }
+                if body["auth_data"].get("public_key") != auth_data.get("public_key") {
+                    return invalid("auth_data.public_key");
+                }
+                if body.get("version").is_some_and(|v| v != version) {
+                    return invalid("version");
+                }
+                if let Some(v) = self
+                    .backups
+                    .get_mut(&auth.user)
+                    .and_then(|b| b.versions.get_mut(version))
+                {
+                    v.1 = body["auth_data"].clone();
+                }
+                Response::no_content()
+            }
+            "DELETE" => {
+                if !self.mfa.remove(&auth.user) {
+                    return error(401, "InvalidToken");
+                }
+                if let Some(b) = self.backups.get_mut(&auth.user) {
+                    if let Some(v) = b.versions.get_mut(version) {
+                        v.2 = true;
+                    }
+                    b.keys.retain(|k, _| k.0 != version);
+                }
+                Response::no_content()
+            }
+            _ => error(404, "NotFound"),
+        }
+    }
+
+    /// Let the next destructive call of `user` pass (MFA ticket): a backup
+    /// version over an existing one, deleting a version, a cross-signing secret
     pub fn grant_mfa_ticket(&mut self, user: &str) {
         self.mfa.insert(user.to_owned());
+    }
+
+    // ------------------------------------------------------------ secrets
+
+    fn secret_allowed(secret_type: &str) -> bool {
+        const TYPES: [&str; 5] = [
+            "m.megolm_backup.v1",
+            "m.cross_signing.master",
+            "m.cross_signing.self_signing",
+            "m.cross_signing.user_signing",
+            "m.secret_storage.default_key",
+        ];
+        TYPES.contains(&secret_type)
+            || secret_type
+                .strip_prefix("m.secret_storage.key.")
+                .is_some_and(|id| !id.is_empty() && id.len() <= 64)
+    }
+
+    fn secret_get(&mut self, auth: &Auth, secret_type: &str) -> Response {
+        if !Self::secret_allowed(secret_type) {
+            return invalid("type");
+        }
+        match self.secrets.get(&(auth.user.clone(), secret_type.to_owned())) {
+            Some(v) => Response::ok(v.clone()),
+            None => error(404, "NotFound"),
+        }
+    }
+
+    fn secret_put(&mut self, auth: &Auth, secret_type: &str, body: &Value) -> Response {
+        if !Self::secret_allowed(secret_type) {
+            return invalid("type");
+        }
+        if !body.is_object() {
+            return invalid("content");
+        }
+        if body.to_string().len() > self.max_secret_bytes {
+            return error(422, "PayloadTooLarge");
+        }
+        if secret_type.starts_with("m.cross_signing.") && !self.mfa.remove(&auth.user) {
+            return error(401, "InvalidToken");
+        }
+        let key = (auth.user.clone(), secret_type.to_owned());
+        let count = self.secrets.keys().filter(|(u, _)| u == &auth.user).count();
+        if !self.secrets.contains_key(&key) && count >= MAX_SECRETS {
+            return error(400, "InvalidOperation");
+        }
+        self.secrets.insert(key, body.clone());
+        Response::no_content()
+    }
+
+    /// A secret storage entry of `user` as stored (tests: tamper, inspect)
+    pub fn secret_mut(&mut self, user: &str, secret_type: &str) -> Option<&mut Value> {
+        self.secrets.get_mut(&(user.to_owned(), secret_type.to_owned()))
+    }
+
+    /// The current backup version's `auth_data` (tests: a server swapping
+    /// the public key)
+    pub fn backup_auth_data_mut(&mut self, user: &str) -> Option<&mut Value> {
+        let b = self.backups.get_mut(user)?;
+        b.versions.values_mut().rev().find(|v| !v.2).map(|v| &mut v.1)
     }
 
     // ----------------------------------------------------- Stoat side
