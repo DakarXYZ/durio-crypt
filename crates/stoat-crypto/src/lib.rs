@@ -140,6 +140,19 @@
 //! [`restore_backup`]: CryptoMachine::restore_backup
 //! [`backup_status`]: CryptoMachine::backup_status
 
+// CR-16: no panics on paths the host calls (FFI turns them into exceptions,
+// but a panic midway can leave half-done state); tests may
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::todo,
+        clippy::unimplemented
+    )
+)]
+
 mod attachments;
 mod backup;
 mod batch;

@@ -89,7 +89,7 @@ impl Tables {
         if order.is_none() {
             *order = Some(store.get_value(SEEN).await?.unwrap_or_default());
         }
-        let order = order.as_mut().expect("loaded");
+        let order = order.get_or_insert_with(Default::default);
 
         // replay: (session, index) → first message id
         let key = seen_key(m.session_id);

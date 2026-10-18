@@ -15,7 +15,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [envelope, payload, api]
+        target: [envelope, payload, api, recovery_key]
     steps:
       - uses: actions/checkout@v4
       - run: rustup toolchain install nightly --profile minimal

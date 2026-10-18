@@ -19,6 +19,17 @@
 //! * sizes are checked on the encoded string before decoding;
 //! * `Debug` never prints ciphertext, plaintext or key material.
 
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::todo,
+        clippy::unimplemented
+    )
+)]
+
 pub mod api;
 pub mod b64;
 pub mod envelope;

@@ -38,3 +38,10 @@ path = "fuzz_targets/api.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "recovery_key"
+path = "fuzz_targets/recovery_key.rs"
+test = false
+doc = false
+bench = false

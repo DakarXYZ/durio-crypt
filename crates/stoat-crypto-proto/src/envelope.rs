@@ -119,6 +119,8 @@ impl EncryptedEnvelope {
     }
 
     pub fn to_value(&self) -> Value {
+        // a struct of strings and integers always serializes
+        #[allow(clippy::expect_used)]
         serde_json::to_value(self).expect("envelope serializes")
     }
 }

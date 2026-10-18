@@ -699,7 +699,7 @@ impl CryptoMachine {
                     .unwrap_or_default(),
             );
         }
-        Ok(known.as_mut().expect("loaded"))
+        Ok(known.get_or_insert_with(BTreeSet::new))
     }
 
     /// Channel state from the cache, else from the store
