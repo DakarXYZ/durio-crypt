@@ -176,17 +176,7 @@ impl MessagePayload {
     /// Serialize with `pad` so that the JSON length is a multiple of
     /// [`PAD_BLOCK`] bytes (Q9). Fails over [`MAX_PAYLOAD_LEN`].
     pub fn to_padded_value(&self) -> Result<Value, PayloadError> {
-        let mut p = self.clone();
-        p.pad.clear();
-        let base = serde_json::to_vec(&p)
-            .map_err(|_| PayloadError::Malformed("serialize"))?
-            .len();
-        let need = (PAD_BLOCK - base % PAD_BLOCK) % PAD_BLOCK;
-        if base + need > MAX_PAYLOAD_LEN {
-            return Err(PayloadError::TooLarge);
-        }
-        p.pad = "0".repeat(need);
-        serde_json::to_value(&p).map_err(|_| PayloadError::Malformed("serialize"))
+        pad_value(serde_json::to_value(self).map_err(|_| PayloadError::Malformed("serialize"))?)
     }
 
     /// Parse version first: a payload from a newer client is
@@ -262,6 +252,23 @@ impl EncryptedFile {
             false,
         )
     }
+}
+
+/// Set `pad` of a payload JSON object so that its serialized length is a
+/// multiple of [`PAD_BLOCK`] bytes (Q9); every other field is kept as is.
+/// Fails over [`MAX_PAYLOAD_LEN`] or for a non-object.
+pub fn pad_value(mut value: Value) -> Result<Value, PayloadError> {
+    let object = value.as_object_mut().ok_or(PayloadError::Malformed("not an object"))?;
+    object.insert("pad".into(), Value::String(String::new()));
+    let base = serde_json::to_vec(&value)
+        .map_err(|_| PayloadError::Malformed("serialize"))?
+        .len();
+    let need = (PAD_BLOCK - base % PAD_BLOCK) % PAD_BLOCK;
+    if base + need > MAX_PAYLOAD_LEN {
+        return Err(PayloadError::TooLarge);
+    }
+    value["pad"] = Value::String("0".repeat(need));
+    Ok(value)
 }
 
 impl fmt::Debug for MessagePayload {

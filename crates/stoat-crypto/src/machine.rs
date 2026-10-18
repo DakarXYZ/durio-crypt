@@ -814,10 +814,22 @@ impl CryptoMachine {
     /// be shared (`prepare_send` returned nothing), else `RoomKeyNotShared`.
     /// The advanced ratchet is stored before the envelope is returned.
     pub async fn encrypt(&self, channel: &str, payload: &MessagePayload) -> Result<EncryptedEnvelope> {
-        let padded = payload.to_padded_value().map_err(|e| match e {
-            PayloadError::TooLarge => CryptoError::PayloadTooLarge,
-            _ => CryptoError::InvalidPayload,
-        })?;
+        let padded = payload.to_padded_value().map_err(payload_error)?;
+        self.encrypt_value(channel, padded).await
+    }
+
+    /// Compatibility tests only (CR-23): encrypt a payload JSON object as
+    /// given — padded, nothing checked or dropped — to play a newer client
+    /// whose payload carries fields (or a version) this one does not know.
+    /// Clients send with [`encrypt`](Self::encrypt).
+    #[doc(hidden)]
+    pub async fn encrypt_payload_json(&self, channel: &str, payload_json: &str) -> Result<EncryptedEnvelope> {
+        let value: Value = serde_json::from_str(payload_json).map_err(|_| CryptoError::InvalidPayload)?;
+        let padded = stoat_crypto_proto::payload::pad_value(value).map_err(payload_error)?;
+        self.encrypt_value(channel, padded).await
+    }
+
+    async fn encrypt_value(&self, channel: &str, padded: Value) -> Result<EncryptedEnvelope> {
         let raw: Raw<AnyMessageLikeEventContent> =
             Raw::from_json(serde_json::value::to_raw_value(&padded).map_err(|_| CryptoError::InvalidPayload)?);
 
@@ -1128,6 +1140,13 @@ impl CryptoMachine {
         })
         .await
         .map_err(store_err("set trust"))
+    }
+}
+
+fn payload_error(e: PayloadError) -> CryptoError {
+    match e {
+        PayloadError::TooLarge => CryptoError::PayloadTooLarge,
+        _ => CryptoError::InvalidPayload,
     }
 }
 

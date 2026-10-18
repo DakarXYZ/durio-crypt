@@ -1,0 +1,94 @@
+{
+  "backup_version": "01KZ0000000000000000000001",
+  "channel": "01KDDDDDDDDDDDDDDDDDDDDDDD",
+  "created_with": "stoat-crypto 0.1.0 (matrix-sdk-crypto 0.19.1, matrix-sdk-sqlite 0.19.1)",
+  "curve25519": "BB9jeRE7zCSKrDwvMf29ZSZL1cL1oM3gMaG/n1LxDFs",
+  "device": "01KDA1A1A1A1A1A1A1A1A1A1A1",
+  "ed25519": "U66E7VvBzQe83Hg6hojBxMjUrLqPRr3bf7s3THbwGKw",
+  "members": [
+    "01KAAAAAAAAAAAAAAAAAAAAAAA",
+    "01KBBBBBBBBBBBBBBBBBBBBBBB"
+  ],
+  "messages": [
+    {
+      "author": "01KBBBBBBBBBBBBBBBBBBBBBBB",
+      "channel": "01KDDDDDDDDDDDDDDDDDDDDDDD",
+      "encrypted": {
+        "algorithm": "m.megolm.v1.aes-sha2",
+        "ciphertext": "AwgAEuACqOyQsch3OHBoKvlmBTb5mYH60wHE+idzdE0DDW0k/Uv956h/TWA7YECDnZZpa5mLeh7xC4bg5uli9O4/zvhOM1P/QDhDOrIH1nh8lLuGMDLEHnN1qHuZEpKmyCugJ8oCN5OfNq6krVbXuPcy/kZILNPylTx+uyaQskROsvSiyjd7fY86IlYQs7Tsib1pFLoaFaXKBBbfuHI6GZs1N3Y5NrKWkx7NxPRHRgxb9hiIASmVflcDIdTZ9WIvGyl5I3D2F4DZIakHJ+q9AmLE32xP6fHEpNIZtwcZTZxgXtUJUV688hvggYOHd0WLK7HTGO/jTjg/k5YPwpigOsRZ4DdkIe0AG7b/0IyURIY3FALzZMOKsg4cGiC9JJLHv92Bgha2MFqC8T3SQ7q/VX3J8VfO3Q4I9JWK9OSpTK/sNNdcHYw5aQqYy14T5Daa0IXSLpNWhpw7UtN3Un11L1rLbU4F0OKKmk4XiT1NOpSkUMRibT5CUq5yhMxAcZUuYGHDqAE7em0/t+Ikc6aEDmypzzSU0FgmNFB7L4uO0ZR0nLnZtNaiAANEJP0QBg",
+        "device_id": "01KDB1B1B1B1B1B1B1B1B1B1B1",
+        "session_id": "8wmaux8VrqLb+vXUfkglNl6mT/Hi+klxTYAffYWJFcA",
+        "v": 1
+      },
+      "id": "01KZ0000000000000000000003",
+      "plaintext": "from B, written by 0.1.0",
+      "replies": [],
+      "ts": 1760700000003
+    },
+    {
+      "author": "01KAAAAAAAAAAAAAAAAAAAAAAA",
+      "channel": "01KDDDDDDDDDDDDDDDDDDDDDDD",
+      "encrypted": {
+        "algorithm": "m.megolm.v1.aes-sha2",
+        "ciphertext": "AwgAEuACZ5BRzzI4+izUyVzGsXox4E3jw5jTeMuYFB47cq8RjfgIrspUkiUNwWATTXazAwXETfXLxnEOkdGMtPmrtMJvQ7SwTEJOaThrOt7N2x+a/XwEzHD25ey1V88nxsZdojbxTBnMoT6VtQ6o6QfE4i+XAHKIV6TkK+JzCleCTQAAh3b3drtQASTlHXznbq9ReAlqjxXfEpH2jHEyd8Ng9VTI8SMDtmrxI0ntX5pMWbPw8Ax7HHW6ToLVdN2veO96e6AMsiUv1LeJ9mj2GRk43aLf0jQBfW5iOwRoveyLkyc252+DyrfLV/fMWi8oc9VxebRsxH6JW1J/Q2IyMc509uVgE+mzjPzESWCusjnH93Da8BeL3iHFSsoV4aSHOwnlef/9M2ZKMIBzWFPU4u4pzjg8tUjqDu4DOFMfvGe5aE30z2RE6IO2fTxpBc9ZVIlJfecqT/qX3oLN7Xb6Ci8u7NOhPpaPH5yckGtrP9VzZ2jFKMjGW1Z0Y1v+brz9ex4wR3QsjzMtmPlKpYRuGfxIZReUggzUD8HojqM/m8iHmogfi9t+4WnyjXOpCw",
+        "device_id": "01KDA1A1A1A1A1A1A1A1A1A1A1",
+        "session_id": "HPd8CAL0vluhx1NFgLSbc6kDsGRP0qUGr2DhoBE02+g",
+        "v": 1
+      },
+      "id": "01KZ0000000000000000000005",
+      "plaintext": "from A, written by 0.1.0",
+      "replies": [],
+      "ts": 1760700000005
+    },
+    {
+      "author": "01KBBBBBBBBBBBBBBBBBBBBBBB",
+      "channel": "01KDDDDDDDDDDDDDDDDDDDDDDD",
+      "encrypted": {
+        "algorithm": "m.megolm.v1.aes-sha2",
+        "ciphertext": "AwgCEuACLGsf0Ounfo8CxGE/0t0JC5oOBRsWrnB2Fb39tqgdXG7d89yfpclqc4DJCSUHy+JtW94/YV+YwwikL5FwKyLMj1cNUIOqd5XF/esoekJmlNtSV/58D2sx6OFYBDxox1nRXhzad5sEuBw04z1IeD1IvYbQbXFMFZjD9vxSi5VHpkgUKLOhf2Nzj3TxQ5Actyp/ITHvhInnqTDqxnrKqOz+zILAJrspTaRRGr8Cc1CatjygjLDvmkCShN95BU09zfM9+PBhpqyJQcQFJScwt5Sh0dUH8dhjKdgBr4wm/0RLQaS/MIDzceaors3s43Nu+ckdxtUgQvutcY34SzNqFgJcopIXv/uIgKZWxkoyKc59PBgO9JEj0wOi2hhfBBk380ZBGGoHhiBxMW0fRl1WYboPtleeAkowZIU027/xLmv3gq4KOfhNILnjVZndwaSXVCcpjvVF8A0IO4a10LLEEKT1vWFg9Fu7ltr/o3w7TpCnwj17p6znstWEXYed4L3lUvE29Pe39UOeBJSp0Kn61fl/TGR3h2wiOkSR54jEVu/U5I/vwPhf57rGCg",
+        "device_id": "01KDB1B1B1B1B1B1B1B1B1B1B1",
+        "session_id": "8wmaux8VrqLb+vXUfkglNl6mT/Hi+klxTYAffYWJFcA",
+        "v": 1
+      },
+      "id": "01KZ0000000000000000000006",
+      "plaintext": "after the edit",
+      "replies": [],
+      "ts": 1760700000006
+    },
+    {
+      "author": "01KBBBBBBBBBBBBBBBBBBBBBBB",
+      "channel": "01KDDDDDDDDDDDDDDDDDDDDDDD",
+      "encrypted": {
+        "algorithm": "m.megolm.v1.aes-sha2",
+        "ciphertext": "AwgAEuACE+Cw4InQ2nLCpBzVAThl4TU94qlIwURh0YSltwoDY7HipEsr6jDBwu6IlzFvO/uv5e8u6K3+0TB0vHaubCubkSW3FpzN0duu98Od5Q6yNQhbcOE5VUoQk7F/8TZ1CZu9y0lNhJM2HpBPMLieRJhU5/4Qag0+lUhjmyLgFAjGqNtPUPkxZoK8uzErlHvuukTb2AUuXpCVZDN4hLb9WXl7U9dtYhMheFsts9VSmdUc40eR4OX0QUKmuqi/mMklQaXcQyMjb2dWmEXaG09GR/Frp1UBwRfd6qamQ04/SrTgZ/lmfcoC0G0S0QxPpQArl9zhpimT6CMt0lBZAAmn6TRbGn3UkvObZaEkBQVg8wFTjhcNoXPDUoaSFcmBwcKrAH34K1867e+nW1ID/RbXKelrhjbdJPqConBA5oqJVv0lbwkuPuTCS/aFAxbLy0QjjuJhgxlJ9kYcIVS6/zcN7UzCBu/TEhwL7g1RuzDGazDDk6NQpVf711tWlsRBNmqYpWyFySNKn62edtoG3bX/FckvjX6IcdBgAN1/XBuNE8pZ4lPnd1ejUo92Bw",
+        "device_id": "01KDB1B1B1B1B1B1B1B1B1B1B1",
+        "session_id": "zh/5aE0ceNIJHgOePYFk+sbSBjETRQfaGilRf1B7P3g",
+        "v": 1
+      },
+      "id": "01KZ0000000000000000000008",
+      "plaintext": "new session, key not acked",
+      "replies": [],
+      "ts": 1760700000008
+    }
+  ],
+  "note": "Test account on the fake server; store key = 32 bytes 0x42. Only test keys, no real data.",
+  "original_before_edit": {
+    "author": "01KBBBBBBBBBBBBBBBBBBBBBBB",
+    "channel": "01KDDDDDDDDDDDDDDDDDDDDDDD",
+    "encrypted": {
+      "algorithm": "m.megolm.v1.aes-sha2",
+      "ciphertext": "AwgBEuACFWPvBTiFczaCFgnoquAkdAJ1/5H8LTkIdI0A7Sv4zO+LBFsDvJo+Phkots696VbQznzdc523yUTvTW+/CHH7zEAGgp8XGadGYChEcQmUYWRQXG+z/QhvzVpzLjGkf39QPU/+hZ39RezntKwlx2nJhGhwXi68L/ZN1RJLxLUa3hHiuKk3ImZcIEXvRRMIJa7dHAmZGZ/r4zyLT4aQ6i5Xj0uFDJKWAWMnzW7NNU0hpMW6PLC7PtcyzeGKxffKMGBFYOUYfOHT0ejphdeg5n3goF4rsqpA7m8zGJlyGRAo7FvbnQnEgtXGQvB37tNEhoqW2sYNDVM+j5G65O+GRNaw0uiMkbbppMkpPC+QcQD3eO5X1s5Y1wMH5uEJGAXEfArLv4VJmkfYJNg94sQz7GLBa9M0YbOwApgFURCXFALNy+QSGohhNdLKrA5IXcDa5tGmeybNcu+HPefwlb3KgweXxybR1utFsGrCKF+0/S2XqPuqRD7jUdgHATMCUBmpywD2tRzyWAzO15ceoKAiQEt5zNHOYaO88AgONGVIVIzn07fp210yThR1Bg",
+      "device_id": "01KDB1B1B1B1B1B1B1B1B1B1B1",
+      "session_id": "8wmaux8VrqLb+vXUfkglNl6mT/Hi+klxTYAffYWJFcA",
+      "v": 1
+    },
+    "id": "01KZ0000000000000000000006",
+    "plaintext": "before the edit",
+    "replies": [],
+    "ts": 1760700000006
+  },
+  "unacked_ids": [
+    "01KZ0000000000000000000007"
+  ],
+  "user": "01KAAAAAAAAAAAAAAAAAAAAAAA"
+}

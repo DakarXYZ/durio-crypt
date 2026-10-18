@@ -18,6 +18,7 @@
 | `payload/megolm_plaintext.*.json` | точный открытый текст Megolm (расшифрован vodozemac из экспортированной сессии) |
 | `ws/*.json` | события WebSocket `E2eeToDevice`, `E2eeDeviceListUpdate` |
 | `stores/v016/` | снимок хранилища matrix-sdk-sqlite 0.16 (схема v13) для теста миграции; ключ хранилища — 32 байта `0x42` |
+| `stores/v010/` | хранилище, записанное stoat-crypto 0.1.0 (N−1 для CR-23, `tests/compat.rs`): аккаунт, сессии, таблицы CR-19, канал, ящик C2, бэкап; снимок заморожен, ключ — 32 байта `0x42` |
 | `backup/recovery_key.json` | пример формата ключа восстановления (одноразовый, из спайка) |
 | `backup/recovery_key.vectors.json` | ключ (32 байта, hex) → ключ восстановления; ввод с опечаткой (`typo`) и «не ключ» (`not_a_key`, вероятно пароль) (CR-12) |
 | `sas/emoji.json` | таблица 64 эмодзи SAS (Matrix `sas-emoji.json`): индекс → символ, английское описание = ключ перевода (CR-11) |
