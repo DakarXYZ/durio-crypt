@@ -41,15 +41,17 @@
 //!    returns **the same id** again — the claim, the key upload, key queries,
 //!    to-device messages: keep a set of ids in flight and do not start one
 //!    twice. Run a pass after every call above, and when [`wakeup_in_ms`]
-//!    says (retries of full mailboxes).
+//!    says (debounced key requests, retries of full mailboxes).
 //! 7. **Send** (per channel, one at a time): loop [`prepare_send`] → run →
 //!    mark until it returns nothing, then [`encrypt`] (`RoomKeyNotShared` →
 //!    back to `prepare_send`), then `POST /channels/{id}/messages`. Edits:
 //!    the same with `edit_of` = the message id and `edit_seq` + 1, then
 //!    `PATCH`.
 //! 8. **Read**: [`decrypt`] / [`decrypt_batch`]; show by
-//!    [`DecryptedMessage::is_clean`] and the shield. `MissingRoomKey`
-//!    messages are decrypted again on `room_keys` (3).
+//!    [`DecryptedMessage::is_clean`] and the shield; on error by
+//!    [`DecryptError::kind`]. `WaitingForKey` messages are decrypted again
+//!    on `room_keys` (3); the core asks own verified devices for the key
+//!    by itself.
 //! 9. **Logout**: drop the machine, then [`CryptoMachine::destroy`].
 //!
 //! Report [`undelivered_devices`] in the UI (a device whose mailbox stays
@@ -75,6 +77,7 @@
 mod batch;
 mod binding;
 mod error;
+mod gossip;
 mod ids;
 #[cfg(not(target_arch = "wasm32"))]
 mod lock;
@@ -85,7 +88,7 @@ mod store;
 mod types;
 
 pub use batch::ServerLimits;
-pub use error::{CryptoError, DecryptError, Result};
+pub use error::{CryptoError, DecryptError, DecryptFailureKind, Result, WithheldReason};
 pub use machine::CryptoMachine;
 pub use outbox::{Timing, UndeliveredDevice};
 pub use requests::{OutgoingRequest, RequestKind};

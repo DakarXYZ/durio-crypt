@@ -11,7 +11,8 @@
 //!    mailbox processing / per-channel sending inside the machine.
 //!
 //! Requests are cached, cut to the server limits and retried by the outbox;
-//! replay and edit tables are `binding` (CR-19).
+//! missing room keys are asked for by `gossip` (CR-08); replay and edit
+//! tables are `binding` (CR-19).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::panic::AssertUnwindSafe;
@@ -22,7 +23,7 @@ use std::time::Duration;
 use async_lock::Mutex;
 use futures_util::FutureExt;
 use matrix_sdk_common::deserialized_responses::{
-    DeviceLinkProblem, ProcessedToDeviceEvent, VerificationLevel, VerificationState,
+    DeviceLinkProblem, ProcessedToDeviceEvent, VerificationLevel, VerificationState, WithheldCode,
 };
 use matrix_sdk_crypto::vodozemac::megolm::{DecryptionError, MegolmMessage};
 use matrix_sdk_crypto::{
@@ -41,7 +42,8 @@ use stoat_crypto_proto::payload::{EVENT_TYPE, MegolmPlaintext, MessagePayload, P
 
 use crate::batch::ServerLimits;
 use crate::binding::{self, Seen};
-use crate::error::{CryptoError, DecryptError, Result};
+use crate::error::{CryptoError, DecryptError, Result, WithheldReason};
+use crate::gossip::{self, KeyRequests};
 use crate::ids;
 use crate::outbox::{self, KV_RETRIES, Outbox, PartMark, Timing, UndeliveredDevice};
 use crate::requests::{self, OutgoingRequest, RequestKind, Response};
@@ -50,8 +52,10 @@ use crate::types::*;
 
 /// Prefix of our values in the library's custom-value table
 const KV_CHANNEL: &str = "stoat.channel.";
-/// Every channel ever set up
+/// Every channel ever set up (moved-message detection)
 const KV_CHANNELS: &str = "stoat.channels.v1";
+/// Channels scanned at most for a session of a missing key
+const MAX_CHANNEL_SCAN: usize = 512;
 
 /// Persisted members and settings of an encrypted channel
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -96,6 +100,9 @@ struct Inner {
     outbox: Mutex<Outbox>,
     /// something changed since the library requests were cached
     dirty: AtomicBool,
+    timing: SyncMutex<Timing>,
+    /// CR-08: missing room keys waiting to be asked for
+    key_requests: SyncMutex<KeyRequests>,
     /// CR-19 tables
     binding: binding::Tables,
     /// dropped last: the store must close before the lock is released
@@ -140,6 +147,8 @@ impl CryptoMachine {
             .update_tracked_users([user_id.as_ref()])
             .await
             .map_err(store_err("track self"))?;
+        // CR-08: key requests are debounced and filtered by the core
+        machine.set_room_key_requests_enabled(false);
         let outbox = Outbox::with_retries(
             machine
                 .store()
@@ -161,6 +170,8 @@ impl CryptoMachine {
                 send_locks: SyncMutex::new(HashMap::new()),
                 outbox: Mutex::new(outbox),
                 dirty: AtomicBool::new(true),
+                timing: SyncMutex::new(Timing::default()),
+                key_requests: SyncMutex::new(KeyRequests::default()),
                 binding: binding::Tables::default(),
                 _opened_lock: StoreLockHolder {
                     #[cfg(not(target_arch = "wasm32"))]
@@ -204,9 +215,15 @@ impl CryptoMachine {
         self.inner.outbox.lock().await.limits = limits;
     }
 
-    /// Delays of the core's own policies (retries of full mailboxes)
+    /// Delays of the core's own policies (key request debounce, retries of
+    /// full mailboxes)
     pub async fn set_timing(&self, timing: Timing) {
+        *self.inner.timing.lock().unwrap_or_else(|e| e.into_inner()) = timing;
         self.inner.outbox.lock().await.timing = timing;
+    }
+
+    fn timing(&self) -> Timing {
+        *self.inner.timing.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Something the library requests depend on changed
@@ -245,9 +262,14 @@ impl CryptoMachine {
     /// returns it again (the host runs each id once, see the crate docs).
     pub async fn outgoing_requests(&self) -> Result<Vec<OutgoingRequest>> {
         let olm = self.olm();
+        let asked = gossip::request_due(&self.inner.key_requests, olm).await?;
+        if !asked.is_empty() {
+            self.touch();
+        }
         let mut ob = self.inner.outbox.lock().await;
         self.refresh(&mut ob, false).await?;
         let mut library = ob.cached.clone();
+        library.extend(asked);
         if ob.claim.is_none()
             && let Some((id, req)) = olm
                 .get_missing_sessions(std::iter::empty())
@@ -331,10 +353,17 @@ impl CryptoMachine {
     }
 
     /// Milliseconds until the core has something to send without any other
-    /// event (a retry): call `outgoing_requests` then. `None`: nothing
-    /// scheduled.
+    /// event (a debounced key request, a retry): call `outgoing_requests`
+    /// then. `None`: nothing scheduled.
     pub async fn wakeup_in_ms(&self) -> Option<u64> {
-        let next = self.inner.outbox.lock().await.next_retry_ms()?;
+        let keys = self
+            .inner
+            .key_requests
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .next_due_ms();
+        let retries = self.inner.outbox.lock().await.next_retry_ms();
+        let next = keys.into_iter().chain(retries).min()?;
         Some(next.saturating_sub(outbox::now_ms()))
     }
 
@@ -397,6 +426,7 @@ impl CryptoMachine {
         let mut processed = self.inner.sync.lock().await;
         let mut result = ToDeviceResult::default();
         let mut in_batch = HashSet::new();
+        let mut arrived = Vec::new();
         let no_lists = DeviceLists::new();
         for m in messages {
             if !in_batch.insert(m.id.clone()) {
@@ -422,6 +452,7 @@ impl CryptoMachine {
                 .iter()
                 .filter(|e| matches!(e, ProcessedToDeviceEvent::UnableToDecrypt { .. }))
                 .count();
+            arrived.extend(keys.iter().map(|k| (k.room_id.clone(), k.session_id.clone())));
             result.room_keys.extend(keys.into_iter().filter_map(|k| {
                 Some(RoomKeyInfo {
                     channel_id: ids::channel_ulid(&k.room_id)?,
@@ -429,7 +460,16 @@ impl CryptoMachine {
                 })
             }));
         }
+        drop(processed);
         self.touch();
+        // CR-08: keys that arrived need no request; cancel the ones sent
+        let cancels = gossip::keys_arrived(&self.inner.key_requests, self.olm(), &arrived).await?;
+        if !cancels.is_empty() {
+            let mut ob = self.inner.outbox.lock().await;
+            for c in cancels {
+                ob.add_own(c);
+            }
+        }
         Ok(result)
     }
 
@@ -813,10 +853,14 @@ impl CryptoMachine {
             },
         });
         let raw = Raw::from_json(serde_json::value::to_raw_value(&event).map_err(|_| DecryptError::Corrupted)?);
-        let decrypted = olm
-            .decrypt_room_event(&raw, &room, &decryption_settings())
-            .await
-            .map_err(map_megolm_error)?;
+        let decrypted = match olm.decrypt_room_event(&raw, &room, &decryption_settings()).await {
+            Ok(d) => d,
+            Err(e) => {
+                return Err(self
+                    .decrypt_failed(map_megolm_error(e), message, room, index, &event)
+                    .await);
+            }
+        };
 
         let plaintext: Value =
             serde_json::from_str(decrypted.event.json().get()).map_err(|_| DecryptError::Corrupted)?;
@@ -897,6 +941,80 @@ impl CryptoMachine {
         out
     }
 
+    /// A missing key: a session of another channel means the server moved
+    /// the message (spike §5.6) — suspicious, nothing to ask for; otherwise
+    /// own devices are asked after the debounce (CR-08)
+    async fn decrypt_failed(
+        &self,
+        error: DecryptError,
+        message: &IncomingEncryptedMessage,
+        room: OwnedRoomId,
+        index: u32,
+        event: &Value,
+    ) -> DecryptError {
+        if error != DecryptError::MissingRoomKey {
+            return error;
+        }
+        let session = &message.envelope.session_id;
+        let pending = self
+            .inner
+            .key_requests
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_pending(&room, session);
+        if !pending {
+            match self.session_elsewhere(&message.channel_id, session).await {
+                Ok(true) => return DecryptError::ChannelMismatch,
+                Ok(false) => {}
+                Err(_) => return DecryptError::Internal,
+            }
+        }
+        let delay = self.timing().key_request_delay_ms;
+        self.inner
+            .key_requests
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .missing(room, session.clone(), index, event.to_string(), delay);
+        DecryptError::MissingRoomKey
+    }
+
+    /// Is `session` known in a channel other than `channel`?
+    async fn session_elsewhere(&self, channel: &str, session: &str) -> Result<bool> {
+        let channel = channel.to_ascii_uppercase();
+        let store = self.olm().store();
+        if let Some(seen_in) = self
+            .inner
+            .binding
+            .channel_of(store, session)
+            .await
+            .map_err(store_err("seen sessions"))?
+        {
+            return Ok(seen_in != channel);
+        }
+        let others: Vec<String> = {
+            let mut known = self.inner.known_channels.lock().await;
+            self.load_known_channels(&mut known)
+                .await?
+                .iter()
+                .filter(|c| **c != channel)
+                .take(MAX_CHANNEL_SCAN)
+                .cloned()
+                .collect()
+        };
+        for other in others {
+            let room = ids::room_id(&other)?;
+            if store
+                .get_inbound_group_session(&room, session)
+                .await
+                .map_err(store_err("inbound session"))?
+                .is_some()
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     // ----------------------------------------------------------- devices
 
     /// Devices of a user (ULID) as known locally
@@ -947,7 +1065,8 @@ impl CryptoMachine {
 /// CR-20: library decryption errors → `DecryptError`
 pub(crate) fn map_megolm_error(e: MegolmError) -> DecryptError {
     match e {
-        MegolmError::MissingRoomKey(_) => DecryptError::MissingRoomKey,
+        MegolmError::MissingRoomKey(Some(code)) => DecryptError::Withheld(withheld_reason(&code)),
+        MegolmError::MissingRoomKey(None) => DecryptError::MissingRoomKey,
         // we hold the session, but only from a later index
         MegolmError::Decryption(DecryptionError::UnknownMessageIndex(..)) => DecryptError::MissingRoomKey,
         MegolmError::EventError(EventError::MismatchedRoom(..)) => DecryptError::ChannelMismatch,
@@ -956,6 +1075,17 @@ pub(crate) fn map_megolm_error(e: MegolmError) -> DecryptError {
         | MegolmError::MismatchedIdentityKeys(_) => DecryptError::SenderMismatch,
         MegolmError::Store(_) => DecryptError::Internal,
         _ => DecryptError::Corrupted,
+    }
+}
+
+fn withheld_reason(code: &WithheldCode) -> WithheldReason {
+    match code {
+        WithheldCode::Blacklisted => WithheldReason::Blocked,
+        WithheldCode::Unverified => WithheldReason::Unverified,
+        WithheldCode::Unauthorised => WithheldReason::Unauthorised,
+        WithheldCode::Unavailable => WithheldReason::Unavailable,
+        WithheldCode::NoOlm => WithheldReason::NoOlmSession,
+        _ => WithheldReason::Other,
     }
 }
 
@@ -971,6 +1101,18 @@ mod tests {
     fn megolm_error_table() {
         let table = [
             (MegolmError::MissingRoomKey(None), DecryptError::MissingRoomKey),
+            (
+                MegolmError::MissingRoomKey(Some(WithheldCode::Blacklisted)),
+                DecryptError::Withheld(WithheldReason::Blocked),
+            ),
+            (
+                MegolmError::MissingRoomKey(Some(WithheldCode::NoOlm)),
+                DecryptError::Withheld(WithheldReason::NoOlmSession),
+            ),
+            (
+                MegolmError::MissingRoomKey(Some(WithheldCode::HistoryNotShared)),
+                DecryptError::Withheld(WithheldReason::Other),
+            ),
             (
                 MegolmError::Decryption(DecryptionError::UnknownMessageIndex(3, 1)),
                 DecryptError::MissingRoomKey,

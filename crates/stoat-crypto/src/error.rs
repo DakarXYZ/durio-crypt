@@ -64,16 +64,21 @@ impl CryptoError {
 /// waiting for the key, "update the app", suspicious, broken.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
 pub enum DecryptError {
-    /// No (or not early enough) Megolm session: wait for the key / request it
+    /// No (or not early enough) Megolm session: wait for the key (the core
+    /// asks own verified devices for it, CR-08)
     #[error("room key missing")]
     MissingRoomKey,
+    /// The sender's device declined to give this device the key
+    #[error("room key withheld")]
+    Withheld(WithheldReason),
     /// Envelope algorithm unknown — update the app
     #[error("unknown algorithm")]
     UnknownAlgorithm,
     /// Envelope or payload version unknown — update the app
     #[error("unsupported version")]
     UnsupportedVersion,
-    /// Plaintext is bound to another channel (suspicious)
+    /// Plaintext or session is bound to another channel: the server moved
+    /// the message (suspicious)
     #[error("channel mismatch")]
     ChannelMismatch,
     /// Plaintext or session does not belong to the claimed sender (suspicious)
@@ -91,6 +96,7 @@ impl DecryptError {
     pub fn code(&self) -> &'static str {
         match self {
             Self::MissingRoomKey => "missing_room_key",
+            Self::Withheld(_) => "withheld",
             Self::UnknownAlgorithm => "unknown_algorithm",
             Self::UnsupportedVersion => "unsupported_version",
             Self::ChannelMismatch => "channel_mismatch",
@@ -99,6 +105,65 @@ impl DecryptError {
             Self::Internal => "internal",
         }
     }
+
+    /// What the UI shows for the message
+    pub fn kind(&self) -> DecryptFailureKind {
+        match self {
+            Self::MissingRoomKey => DecryptFailureKind::WaitingForKey,
+            Self::Withheld(r) => DecryptFailureKind::Withheld(*r),
+            Self::UnknownAlgorithm | Self::UnsupportedVersion => DecryptFailureKind::UpdateApp,
+            Self::ChannelMismatch | Self::SenderMismatch => DecryptFailureKind::Suspicious,
+            Self::Corrupted => DecryptFailureKind::Broken,
+            Self::Internal => DecryptFailureKind::RetryLater,
+        }
+    }
+}
+
+/// Why the sender withheld a room key (`m.room_key.withheld` codes)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WithheldReason {
+    /// `m.blacklisted`: the sender blocked this device
+    Blocked,
+    /// `m.unverified`: the sender shares only with verified devices
+    Unverified,
+    /// `m.unauthorised`: not allowed to read (e.g. not a member then)
+    Unauthorised,
+    /// `m.unavailable`: asked for a key the other side does not have
+    Unavailable,
+    /// `m.no_olm`: no secure channel to this device (no one-time key)
+    NoOlmSession,
+    /// Any other code
+    Other,
+}
+
+impl WithheldReason {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Blocked => "blocked",
+            Self::Unverified => "unverified",
+            Self::Unauthorised => "unauthorised",
+            Self::Unavailable => "unavailable",
+            Self::NoOlmSession => "no_olm",
+            Self::Other => "other",
+        }
+    }
+}
+
+/// UI-facing state of a message that could not be decrypted
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DecryptFailureKind {
+    /// "Waiting for the key…": decrypt again on `ToDeviceResult::room_keys`
+    WaitingForKey,
+    /// The sender will not send the key to this device
+    Withheld(WithheldReason),
+    /// Newer format: "update the app"
+    UpdateApp,
+    /// The server tampered with it: show as suspicious, not as text
+    Suspicious,
+    /// Broken ciphertext or payload
+    Broken,
+    /// Local store failure: try again later
+    RetryLater,
 }
 
 pub type Result<T, E = CryptoError> = std::result::Result<T, E>;

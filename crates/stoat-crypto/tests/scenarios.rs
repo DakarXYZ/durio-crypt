@@ -1,7 +1,7 @@
 //! Scenarios of the CR-01 spike, re-run through the `CryptoMachine` façade and
 //! the backend-faithful fake server (CR-18 scaffolding), plus the checks of
-//! CR-04…CR-07, CR-19 and CR-24. Key forwarding, SAS and backup (S6, S3,
-//! S8) move here with blocks 3B/3C — until then they live in
+//! CR-04…CR-07, CR-19 and CR-24. Key forwarding (S6) is in `delivery.rs`;
+//! SAS and backup (S3, S8) move here with block 3C — until then they live in
 //! `spikes/spike-msc/tests/scenarios.rs`.
 
 mod common;
@@ -10,7 +10,7 @@ use common::*;
 use serde_json::json;
 use stoat_crypto::proto::EncryptedEnvelope;
 use stoat_crypto::proto::api::ToDeviceMessage;
-use stoat_crypto::{CryptoError, DecryptError, RequestKind, Trust, Verification};
+use stoat_crypto::{CryptoError, DecryptError, DecryptFailureKind, RequestKind, Trust, Verification, WithheldReason};
 
 /// S1/T1 + CR-24: only ciphertext reaches the server; every device of the
 /// peer reads; the sender reads its own echo without a replay mark.
@@ -134,10 +134,10 @@ async fn s07_server_tampering() {
     b.sync().await;
     assert!(b.decrypt(&reply).await.unwrap().is_clean());
 
-    // moved to another channel: the session is looked up per channel
+    // moved to another channel: the session belongs to `dm` (spike §5.6)
     let mut moved = reply.clone();
     moved.channel = other.clone();
-    assert_eq!(b.decrypt(&moved).await.unwrap_err(), DecryptError::MissingRoomKey);
+    assert_eq!(b.decrypt(&moved).await.unwrap_err(), DecryptError::ChannelMismatch);
 
     // author swapped by the server
     let mut forged = reply.clone();
@@ -226,7 +226,7 @@ async fn shield_follows_device_trust() {
         Some(a.m().identity_keys().ed25519.as_str())
     );
 
-    // blocked devices do not get new room keys
+    // blocked devices do not get new room keys, and are told so
     a.m()
         .set_device_trust(&b.auth.user, &b.auth.device, Trust::Blocked)
         .await
@@ -234,10 +234,9 @@ async fn shield_follows_device_trust() {
     a.m().invalidate_outbound_session(&dm).await.unwrap();
     a.send(&dm, &text("not for you")).await;
     b.sync().await;
-    assert_eq!(
-        b.decrypt(&last(&srv, &dm)).await.unwrap_err(),
-        DecryptError::MissingRoomKey
-    );
+    let e = b.decrypt(&last(&srv, &dm)).await.unwrap_err();
+    assert_eq!(e, DecryptError::Withheld(WithheldReason::Blocked));
+    assert_eq!(e.kind(), DecryptFailureKind::Withheld(WithheldReason::Blocked));
     a.sync().await;
 }
 

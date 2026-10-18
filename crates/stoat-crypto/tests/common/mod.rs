@@ -35,9 +35,12 @@ pub fn text(t: &str) -> MessagePayload {
     MessagePayload::text(t, "AAAAAAAAAAAAAAAAAAAAAA", 1_760_700_000_000)
 }
 
-/// Test policy (shortened delays)
+/// Test policy: missing keys are asked for at once
 pub fn fast() -> Timing {
-    Timing::default()
+    Timing {
+        key_request_delay_ms: 0,
+        ..Timing::default()
+    }
 }
 
 pub struct Device {

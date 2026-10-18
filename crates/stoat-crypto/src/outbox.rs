@@ -42,6 +42,8 @@ pub(crate) const KV_RETRIES: &str = "stoat.outbox.retries.v1";
 /// tests shorten them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Timing {
+    /// Wait before asking own devices for a missing room key (CR-08: 2–5 s)
+    pub key_request_delay_ms: u64,
     /// First retry of a to-device message refused for a full mailbox,
     /// doubled after each attempt
     pub to_device_retry_ms: u64,
@@ -52,6 +54,7 @@ pub struct Timing {
 impl Default for Timing {
     fn default() -> Self {
         Self {
+            key_request_delay_ms: 3_000,
             to_device_retry_ms: 60_000,
             // 1 + 2 + … + 128 min ≈ 4 h
             to_device_retry_attempts: 8,
@@ -178,6 +181,10 @@ impl Outbox {
             }
         }
         self.handed.remove(id);
+    }
+
+    pub(crate) fn add_own(&mut self, r: OutgoingRequest) {
+        self.own.insert(r.id.clone(), r);
     }
 
     /// Requests as the client must send them: parts instead of oversized
@@ -454,6 +461,7 @@ mod tests {
             timing: Timing {
                 to_device_retry_ms: 0,
                 to_device_retry_attempts: 2,
+                ..Timing::default()
             },
             ..Outbox::default()
         };

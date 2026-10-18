@@ -155,6 +155,14 @@ impl Tables {
             stale_edit: stale,
         })
     }
+
+    /// Channel a session was first seen in, if any message of it was decrypted
+    pub(crate) async fn channel_of(&self, store: &Store, session: &str) -> StoreResult<Option<String>> {
+        Ok(store
+            .get_value::<SeenBucket>(&seen_key(session))
+            .await?
+            .map(|b| b.channel))
+    }
 }
 
 /// `edit_of`/`edit_seq` consistency. Stoat edits are an in-place `PATCH`: the
@@ -208,6 +216,8 @@ mod tests {
             "same seq, other ciphertext"
         );
         assert_eq!(t.check(s, seen("M1", "T", 1, 2)).await.unwrap(), Binding::default());
+        assert_eq!(t.channel_of(s, "S").await.unwrap().as_deref(), Some("C"));
+        assert_eq!(t.channel_of(s, "X").await.unwrap(), None);
     }
 
     #[tokio::test]
