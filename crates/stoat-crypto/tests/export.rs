@@ -136,6 +136,19 @@ async fn wrong_passphrase_or_broken_file() {
         );
     }
 
+    // over the 64 MiB cap: refused before anything is decoded (review O-8)
+    let huge = format!(
+        "{}
+{}{}",
+        lines[0],
+        "A".repeat(stoat_crypto::proto::key_export::MAX_FILE_LEN),
+        &file[lines[0].len()..]
+    );
+    assert_eq!(
+        m.import_room_keys(&huge, "right").await.unwrap_err(),
+        CryptoError::InvalidKeyFile
+    );
+
     // nothing was imported by any of these
     assert_eq!(
         fresh.decrypt(&last(&srv, &dm)).await.unwrap_err(),

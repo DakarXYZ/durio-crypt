@@ -66,6 +66,9 @@ impl CryptoMachine {
     /// Export the room keys of `channels` (all channels if empty) into a
     /// file encrypted with `passphrase` (not empty). PBKDF2 makes this take
     /// about a second: run it off the UI thread.
+    /// `InvalidKeyFile` if the file would exceed the import limit
+    /// (`proto::key_export::MAX_FILE_LEN`, 64 MiB ≈ 90 000 sessions):
+    /// export fewer channels at a time.
     pub async fn export_room_keys(&self, passphrase: &str, channels: &[String]) -> Result<KeyExport> {
         if passphrase.is_empty() {
             return Err(CryptoError::PassphraseRequired);
@@ -80,13 +83,17 @@ impl CryptoMachine {
         let sessions = keys.len();
         let data = encrypt_room_key_export(&keys, passphrase, EXPORT_ROUNDS)
             .map_err(|_| CryptoError::Internal("export room keys"))?;
+        // never write a file the import refuses (review O-8)
+        if data.len() > key_export::MAX_FILE_LEN {
+            return Err(CryptoError::InvalidKeyFile);
+        }
         Ok(KeyExport { data, sessions })
     }
 
     /// Import a key file (ours, or another Matrix client's: only sessions of
     /// Stoat channels are kept). `WrongPassphrase` if the MAC does not
-    /// match, `InvalidKeyFile` if it is not such a file. Imported keys show
-    /// as `Unauthenticated`.
+    /// match, `InvalidKeyFile` if it is not such a file or is over 64 MiB.
+    /// Imported keys show as `Unauthenticated`.
     pub async fn import_room_keys(&self, file: &str, passphrase: &str) -> Result<KeyImportResult> {
         // the armor first, never the library on a crafted file (proto, fuzzed)
         let file = key_export::parse(file).map_err(|_| CryptoError::InvalidKeyFile)?;

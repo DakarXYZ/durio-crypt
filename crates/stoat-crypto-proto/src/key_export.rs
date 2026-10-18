@@ -21,6 +21,9 @@ pub const FOOTER: &str = "-----END MEGOLM SESSION DATA-----";
 pub const FORMAT_VERSION: u8 = 1;
 /// Most PBKDF2 rounds accepted from a file (as for the backup passphrase)
 pub const MAX_ROUNDS: u32 = 1_000_000;
+/// Largest file read (review O-8): 64 MiB ≈ 90 000 sessions; a bigger
+/// account exports per channel
+pub const MAX_FILE_LEN: usize = 64 * 1024 * 1024;
 /// version + salt + IV + rounds … MAC
 pub const MIN_PAYLOAD: usize = 1 + 16 + 16 + 4 + 32;
 
@@ -30,6 +33,9 @@ pub enum KeyExportError {
     /// No armor, not base64 or too short for the format
     #[error("not a key export file")]
     NotAKeyFile,
+    /// Over [`MAX_FILE_LEN`]: refused before anything is copied or decoded
+    #[error("key export file too large")]
+    TooLarge,
     /// A format version other than 1
     #[error("unsupported key export version")]
     UnsupportedVersion,
@@ -59,6 +65,9 @@ impl std::fmt::Debug for KeyExportFile {
 
 /// Check the armor and the header fields of a key export file
 pub fn parse(file: &str) -> Result<KeyExportFile, KeyExportError> {
+    if file.len() > MAX_FILE_LEN {
+        return Err(KeyExportError::TooLarge);
+    }
     let text = file.trim();
     if !(text.starts_with(HEADER) && text.ends_with(FOOTER)) || text.len() < HEADER.len() + FOOTER.len() {
         return Err(KeyExportError::NotAKeyFile);
@@ -130,6 +139,24 @@ mod tests {
         ] {
             assert_eq!(parse(&bad).err(), Some(e), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn oversized_files_are_refused_first() {
+        // valid armor around a body that alone is over the limit
+        let big = format!(
+            "{HEADER}
+{}
+{FOOTER}",
+            "A".repeat(MAX_FILE_LEN)
+        );
+        assert_eq!(parse(&big).err(), Some(KeyExportError::TooLarge));
+        let at_limit = format!(
+            "{HEADER}
+{}",
+            " ".repeat(MAX_FILE_LEN - HEADER.len() - 1)
+        );
+        assert_eq!(parse(&at_limit).err(), Some(KeyExportError::NotAKeyFile));
     }
 
     /// The header and footer may overlap in a short input: no slicing panic
