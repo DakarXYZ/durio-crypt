@@ -19,6 +19,8 @@
 | `ws/*.json` | события WebSocket `E2eeToDevice`, `E2eeDeviceListUpdate` |
 | `stores/v016/` | снимок хранилища matrix-sdk-sqlite 0.16 (схема v13) для теста миграции; ключ хранилища — 32 байта `0x42` |
 | `backup/recovery_key.json` | пример формата ключа восстановления (одноразовый) |
+| `sas/emoji.json` | таблица 64 эмодзи SAS (Matrix `sas-emoji.json`): индекс → символ, английское описание = ключ перевода (CR-11) |
+| `sas/vectors.json` | 6 байт SAS (hex) → 7 индексов эмодзи и 3 десятичных числа (CR-11) |
 
 Идентификаторы в телах `/e2ee/*` — Matrix-форма C15 (`@{lower(ulid)}:stoat.invalid`), `device_id` — ULID сессии.
 В WS-событиях (это события Stoat) пользователи — ULID как есть. Расхождения с планом — `docs/spike-report.md`, §5.
@@ -26,8 +28,10 @@
 ## После спайка (этап 3A)
 
 - Источник истины — эта папка. `api/` и `envelope/` побайтно скопированы в бэкенд
-  (`stoatchat/crates/core/models/tests/fixtures/e2ee/`); хеши — `SHA256SUMS`, сверка —
-  `scripts/fixtures-digest.sh --check` (CI) и `--backend <путь к stoatchat>`.
+  (`stoatchat/crates/core/models/tests/fixtures/e2ee/`); хеши всех JSON-векторов — `SHA256SUMS`, сверка —
+  `scripts/fixtures-digest.sh --check` (CI) и `--backend <путь к stoatchat>` (только `api/` и `envelope/`).
+- Блок 3C: `sas/*` и `backup/*` — для тестов Kotlin/JS; перегенерация — `DUMP_FIXTURES=1 cargo test -p
+  stoat-crypto --test fixtures` и `-p stoat-crypto-proto --test fixtures`.
 - Типы и проверки — крейт `stoat-crypto-proto`, тест `crates/stoat-crypto-proto/tests/fixtures.rs` (круговой
   разбор каждого файла).
 - `ws/E2eeToDevice.json`: `sender` исправлен на Matrix-форму (`@…:stoat.invalid`) — так его шлёт бэкенд

@@ -57,6 +57,23 @@
 //! Report [`undelivered_devices`] in the UI (a device whose mailbox stays
 //! full misses keys).
 //!
+//! ## Verification (CR-11)
+//!
+//! * **Start**: device list → "Verify" → [`request_verification`] →
+//!   [`SasHandle`]; the request leaves with the next request pass.
+//! * **Incoming**: a mailbox pass returns `ToDeviceResult::verifications`
+//!   (flow ids); [`verification`] gives the handle; state `Incoming` → show
+//!   the prompt → `accept()` or `cancel()`.
+//! * **Flow**: after every mailbox pass and every action re-read
+//!   [`SasHandle::state`] and run a request pass: `Ready` → `start()` (either
+//!   side; the other side accepts automatically) → `ShowCodes { emoji,
+//!   decimals }` → the user compares → `confirm()` or `mismatch()` →
+//!   `Confirmed` → `Done` (the device is now `Trust::Verified`). `Cancelled
+//!   { reason }` ends the flow (`Mismatch`: warn, possible attack).
+//! * **Timeouts**: while a flow is open [`wakeup_in_ms`] is at most 10 s;
+//!   the pass it triggers cancels expired flows (`Timeout`). Emoji: index
+//!   into [`SAS_EMOJI`], description = translation key.
+//!
 //! ## Attachments (CR-10)
 //!
 //! * **Upload**: per file [`AttachmentEncryptor::new`] → `update` per chunk
@@ -89,6 +106,8 @@
 //! [`decrypt`]: CryptoMachine::decrypt
 //! [`decrypt_batch`]: CryptoMachine::decrypt_batch
 //! [`undelivered_devices`]: CryptoMachine::undelivered_devices
+//! [`request_verification`]: CryptoMachine::request_verification
+//! [`verification`]: CryptoMachine::verification
 
 mod attachments;
 mod batch;
@@ -103,6 +122,7 @@ mod outbox;
 mod requests;
 mod store;
 mod types;
+mod verification;
 
 pub use attachments::{
     ATTACHMENT_CHUNK, AttachmentDecryptor, AttachmentEncryptor, AttachmentVerifier, decrypt_attachment,
@@ -116,6 +136,7 @@ pub use requests::{OutgoingRequest, RequestKind};
 pub use stoat_crypto_proto as proto;
 pub use store::{StoreConfig, StoreKey, indexeddb_names};
 pub use types::*;
+pub use verification::{CancelReason, SAS_EMOJI, SasEmoji, SasHandle, SasState};
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use lock::LOCK_FILE;

@@ -36,6 +36,12 @@ pub enum CryptoError {
     /// The payload is not a valid payload v1
     #[error("invalid message payload")]
     InvalidPayload,
+    /// The device is not known (keys not queried yet) or is our own
+    #[error("unknown device")]
+    UnknownDevice,
+    /// The verification action does not apply in the flow's current state
+    #[error("verification step not possible now")]
+    VerificationNotActive,
     /// An `EncryptedFile` is not a valid v2 object
     #[error("invalid encrypted file description")]
     InvalidAttachment,
@@ -62,6 +68,8 @@ impl CryptoError {
             Self::RoomKeyNotShared => "room_key_not_shared",
             Self::PayloadTooLarge => "payload_too_large",
             Self::InvalidPayload => "invalid_payload",
+            Self::UnknownDevice => "unknown_device",
+            Self::VerificationNotActive => "verification_not_active",
             Self::InvalidAttachment => "invalid_attachment",
             Self::AttachmentHashMismatch => "attachment_hash_mismatch",
             Self::Internal(_) => "internal",

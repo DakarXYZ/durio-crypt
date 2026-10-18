@@ -49,6 +49,7 @@ use crate::outbox::{self, KV_RETRIES, Outbox, PartMark, Timing, UndeliveredDevic
 use crate::requests::{self, OutgoingRequest, RequestKind, Response};
 use crate::store::{self, Opened, StoreConfig};
 use crate::types::*;
+use crate::verification::{self, Flows};
 
 /// Prefix of our values in the library's custom-value table
 const KV_CHANNEL: &str = "stoat.channel.";
@@ -105,6 +106,8 @@ struct Inner {
     key_requests: SyncMutex<KeyRequests>,
     /// CR-19 tables
     binding: binding::Tables,
+    /// CR-11: verification flows and their last state
+    flows: SyncMutex<Flows>,
     /// dropped last: the store must close before the lock is released
     _opened_lock: StoreLockHolder,
 }
@@ -173,6 +176,7 @@ impl CryptoMachine {
                 timing: SyncMutex::new(Timing::default()),
                 key_requests: SyncMutex::new(KeyRequests::default()),
                 binding: binding::Tables::default(),
+                flows: SyncMutex::new(Flows::default()),
                 _opened_lock: StoreLockHolder {
                     #[cfg(not(target_arch = "wasm32"))]
                     _lock: lock,
@@ -203,8 +207,18 @@ impl CryptoMachine {
         }
     }
 
-    fn olm(&self) -> &OlmMachine {
+    pub(crate) fn olm(&self) -> &OlmMachine {
         &self.inner.machine
+    }
+
+    pub(crate) fn flows(&self) -> std::sync::MutexGuard<'_, Flows> {
+        self.inner.flows.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// A to-device request of the core itself (verification, cancellations)
+    pub(crate) async fn add_own_request(&self, r: OutgoingRequest) {
+        self.inner.outbox.lock().await.add_own(r);
+        self.touch();
     }
 
     // ------------------------------------------------------------- requests
@@ -262,6 +276,16 @@ impl CryptoMachine {
     /// returns it again (the host runs each id once, see the crate docs).
     pub async fn outgoing_requests(&self) -> Result<Vec<OutgoingRequest>> {
         let olm = self.olm();
+        // CR-11: the library cancels timed-out verifications when it
+        // garbage-collects, which happens in `receive_sync_changes`
+        if self.flows().any_active() {
+            self.refresh_flows();
+            let processed = self.inner.sync.lock().await;
+            self.sync_changes(&processed, vec![], &DeviceLists::new(), None).await?;
+            drop(processed);
+            self.refresh_flows();
+            self.touch();
+        }
         let asked = gossip::request_due(&self.inner.key_requests, olm).await?;
         if !asked.is_empty() {
             self.touch();
@@ -363,7 +387,11 @@ impl CryptoMachine {
             .unwrap_or_else(|e| e.into_inner())
             .next_due_ms();
         let retries = self.inner.outbox.lock().await.next_retry_ms();
-        let next = keys.into_iter().chain(retries).min()?;
+        let verification = self
+            .flows()
+            .any_active()
+            .then(|| outbox::now_ms().saturating_add(verification::POLL_MS));
+        let next = keys.into_iter().chain(retries).chain(verification).min()?;
         Some(next.saturating_sub(outbox::now_ms()))
     }
 
@@ -427,6 +455,7 @@ impl CryptoMachine {
         let mut result = ToDeviceResult::default();
         let mut in_batch = HashSet::new();
         let mut arrived = Vec::new();
+        let mut all_events = Vec::new();
         let no_lists = DeviceLists::new();
         for m in messages {
             if !in_batch.insert(m.id.clone()) {
@@ -453,6 +482,7 @@ impl CryptoMachine {
                 .filter(|e| matches!(e, ProcessedToDeviceEvent::UnableToDecrypt { .. }))
                 .count();
             arrived.extend(keys.iter().map(|k| (k.room_id.clone(), k.session_id.clone())));
+            all_events.extend(events);
             result.room_keys.extend(keys.into_iter().filter_map(|k| {
                 Some(RoomKeyInfo {
                     channel_id: ids::channel_ulid(&k.room_id)?,
@@ -462,6 +492,8 @@ impl CryptoMachine {
         }
         drop(processed);
         self.touch();
+        // CR-11: flows touched, SAS starts of accepted requests accepted
+        result.verifications = self.verification_events(&all_events).await?;
         // CR-08: keys that arrived need no request; cancel the ones sent
         let cancels = gossip::keys_arrived(&self.inner.key_requests, self.olm(), &arrived).await?;
         if !cancels.is_empty() {

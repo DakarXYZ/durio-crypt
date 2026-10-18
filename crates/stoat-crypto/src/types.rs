@@ -43,6 +43,9 @@ pub struct ToDeviceResult {
     pub skipped_duplicates: usize,
     /// Olm messages that could not be decrypted
     pub undecryptable: usize,
+    /// Verification flows that changed (CR-11): re-read their state; a new
+    /// id is an incoming request (`CryptoMachine::verification`)
+    pub verifications: Vec<String>,
 }
 
 /// An encrypted channel message as the client got it from the server

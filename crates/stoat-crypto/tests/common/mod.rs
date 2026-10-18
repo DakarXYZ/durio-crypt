@@ -9,7 +9,7 @@ use stoat_crypto::proto::api::{self, KeysCountResponse, ToDeviceFetchResponse};
 use stoat_crypto::proto::{EncryptedEnvelope, MessagePayload};
 use stoat_crypto::{
     ChannelEncryptionSettings, CryptoMachine, DecryptError, DecryptedMessage, IncomingEncryptedMessage,
-    OutgoingRequest, StoreConfig, StoreKey, Timing, ToDeviceResult, Trust,
+    OutgoingRequest, SasHandle, SasState, StoreConfig, StoreKey, Timing, ToDeviceResult, Trust,
 };
 use stoat_crypto_fakeserver::{Auth, FakeServer, Server, StoredMessage};
 
@@ -104,7 +104,14 @@ impl Device {
         self.machine = Some(machine);
     }
 
-    /// Mark `other` verified on this device (what SAS ends with, 3C)
+    /// The handle of the last verification flow this device heard of
+    pub fn last_verification(&self) -> SasHandle {
+        let flow = self.received.verifications.last().expect("a verification arrived");
+        self.m().verification(flow).expect("flow known")
+    }
+
+    /// Mark `other` verified on this device without SAS (shortcut for tests
+    /// that are not about verification)
     pub async fn trust(&self, other: &Device) {
         self.m()
             .set_device_trust(&other.auth.user, &other.auth.device, Trust::Verified)
@@ -169,6 +176,7 @@ impl Device {
             self.received.processed += r.processed;
             self.received.skipped_duplicates += r.skipped_duplicates;
             self.received.undecryptable += r.undecryptable;
+            self.received.verifications.extend(r.verifications);
         }
 
         let counts = self.call("GET", api::paths::KEYS_COUNT, None);
@@ -306,4 +314,55 @@ pub async fn sync_all(devices: &mut [&mut Device]) {
             d.sync().await;
         }
     }
+}
+
+/// Both sides' handles once SAS between `a` and `b` shows the codes:
+/// request (a) → accept (b) → start (a) → keys exchanged
+pub async fn sas_until_codes(a: &mut Device, b: &mut Device) -> (SasHandle, SasHandle) {
+    let ha = a.m().request_verification(&b.auth.user, &b.auth.device).await.unwrap();
+    assert_eq!(ha.state(), SasState::Requested);
+    a.sync().await;
+    b.sync().await;
+    let hb = b.last_verification();
+    assert_eq!(hb.flow_id(), ha.flow_id());
+    assert_eq!(hb.state(), SasState::Incoming);
+    assert_eq!(hb.other_device_id().as_deref(), Some(a.auth.device.as_str()));
+    hb.accept().await.unwrap();
+    b.sync().await;
+    a.sync().await;
+    assert_eq!(ha.state(), SasState::Ready);
+    ha.start().await.unwrap();
+    for _ in 0..3 {
+        a.sync().await;
+        b.sync().await;
+    }
+    (ha, hb)
+}
+
+/// Full SAS: both see the same codes and confirm → both devices verified
+pub async fn sas_verify(a: &mut Device, b: &mut Device) {
+    let (ha, hb) = sas_until_codes(a, b).await;
+    let (
+        SasState::ShowCodes {
+            emoji: ea,
+            decimals: da,
+        },
+        SasState::ShowCodes {
+            emoji: eb,
+            decimals: db,
+        },
+    ) = (ha.state(), hb.state())
+    else {
+        panic!("codes not shown: {:?} / {:?}", ha.state(), hb.state());
+    };
+    assert_eq!((ea.len(), &ea, da), (7, &eb, db));
+    ha.confirm().await.unwrap();
+    assert_eq!(ha.state(), SasState::Confirmed);
+    hb.confirm().await.unwrap();
+    for _ in 0..3 {
+        a.sync().await;
+        b.sync().await;
+    }
+    assert_eq!(ha.state(), SasState::Done);
+    assert_eq!(hb.state(), SasState::Done);
 }

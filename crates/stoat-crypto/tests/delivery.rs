@@ -39,10 +39,10 @@ fn lose_next_room_key(d: &Device, device: &str) {
     }));
 }
 
+/// Own devices verify each other by SAS (CR-11)
 async fn verified_pair(b1: &mut Device, b2: &mut Device) {
-    sync_all(&mut [b1, b2]).await;
-    b1.trust(b2).await;
-    b2.trust(b1).await;
+    sync_all(&mut [&mut *b1, &mut *b2]).await;
+    sas_verify(b1, b2).await;
 }
 
 /// S6/T7: the server lost the room key for B2 → after the debounce B2 asks

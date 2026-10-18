@@ -1,8 +1,7 @@
 //! Scenarios of the CR-01 spike, re-run through the `CryptoMachine` façade and
 //! the backend-faithful fake server (CR-18 scaffolding), plus the checks of
-//! CR-04…CR-07, CR-10, CR-19 and CR-24. Key forwarding (S6) is in
-//! `delivery.rs`; SAS and backup (S3, S8) move here with block 3C — until
-//! then they live in `spikes/spike-msc/tests/scenarios.rs`.
+//! CR-04…CR-07, CR-10, CR-11, CR-19 and CR-24. Key forwarding (S6, with
+//! SAS between own devices) is in `delivery.rs`.
 
 mod common;
 
@@ -11,8 +10,9 @@ use serde_json::json;
 use stoat_crypto::proto::api::ToDeviceMessage;
 use stoat_crypto::proto::{Attachment, EncryptedEnvelope, Thumbnail};
 use stoat_crypto::{
-    ATTACHMENT_CHUNK, AttachmentEncryptor, AttachmentVerifier, CryptoError, DecryptError, DecryptFailureKind,
-    RequestKind, Trust, Verification, WithheldReason, decrypt_attachment, encrypt_attachment,
+    ATTACHMENT_CHUNK, AttachmentEncryptor, AttachmentVerifier, CancelReason, CryptoError, DecryptError,
+    DecryptFailureKind, RequestKind, SAS_EMOJI, SasState, Trust, Verification, WithheldReason, decrypt_attachment,
+    encrypt_attachment,
 };
 
 /// S1/T1 + CR-24: only ciphertext reaches the server; every device of the
@@ -205,7 +205,7 @@ async fn s07_server_tampering() {
     assert_eq!(b.decrypt(&alg).await.unwrap_err(), DecryptError::UnknownAlgorithm);
 }
 
-/// T12 outcome without the SAS flow (3C): local trust drives the shield
+/// Local trust (`set_device_trust`, also what SAS ends with) drives the shield
 #[tokio::test]
 async fn shield_follows_device_trust() {
     let srv = server();
@@ -701,4 +701,124 @@ async fn cr10_attachment_with_thumbnail() {
         decrypt_attachment(&blob, thumb_file).unwrap_err(),
         CryptoError::AttachmentHashMismatch
     );
+}
+
+/// S8/T12: SAS between two users over to-device. Both screens show the same
+/// seven emoji (spec table) and decimals; after both confirm, each device is
+/// verified on the other and the shield turns to Verified.
+#[tokio::test]
+async fn s08_sas_emoji_both_sides_verified() {
+    let srv = server();
+    let mut a = Device::login(&srv, "A", "A1").await;
+    let mut b = Device::login(&srv, "B", "B1").await;
+    let dm = channel(&srv, "C", &[&a, &b]).await;
+    sync_all(&mut [&mut a, &mut b]).await;
+
+    let (ha, hb) = sas_until_codes(&mut a, &mut b).await;
+    assert!(!ha.is_self_verification());
+    assert_eq!(ha.other_user_id(), b.auth.user);
+    let SasState::ShowCodes { emoji, decimals } = hb.state() else {
+        panic!("{:?}", hb.state());
+    };
+    for e in &emoji {
+        assert_eq!(SAS_EMOJI[e.index as usize], (e.symbol.as_str(), e.description.as_str()));
+    }
+    assert!(decimals.iter().all(|d| (1000..=9191).contains(d)));
+    // the host is asked to come back while a flow is open (timeouts)
+    let wake = a.m().wakeup_in_ms().await.unwrap();
+    assert!(wake <= 10_000, "{wake}");
+    assert_eq!(a.m().verifications().len(), 1);
+
+    ha.confirm().await.unwrap();
+    hb.confirm().await.unwrap();
+    sync_all(&mut [&mut a, &mut b]).await;
+    assert_eq!((ha.state(), hb.state()), (SasState::Done, SasState::Done));
+    assert!(a.m().verifications().is_empty());
+    for (d, other) in [(&a, &b), (&b, &a)] {
+        let devices = d.m().devices(&other.auth.user).await.unwrap();
+        assert_eq!(devices[0].trust, Trust::Verified);
+    }
+    a.send(&dm, &text("after sas")).await;
+    b.sync().await;
+    assert_eq!(
+        b.decrypt(&last(&srv, &dm)).await.unwrap().verification,
+        Verification::Verified
+    );
+}
+
+/// T12: the user sees different codes → `m.mismatched_sas` on both sides,
+/// nothing becomes verified
+#[tokio::test]
+async fn sas_mismatch_cancels_and_trusts_nothing() {
+    let srv = server();
+    let mut a = Device::login(&srv, "A", "A1").await;
+    let mut b = Device::login(&srv, "B", "B1").await;
+    channel(&srv, "C", &[&a, &b]).await;
+    sync_all(&mut [&mut a, &mut b]).await;
+
+    let (ha, hb) = sas_until_codes(&mut a, &mut b).await;
+    hb.mismatch().await.unwrap();
+    sync_all(&mut [&mut b, &mut a]).await;
+    for (h, by_us) in [(&ha, false), (&hb, true)] {
+        match h.state() {
+            SasState::Cancelled { reason, code, by_us: b } => {
+                assert_eq!(
+                    (reason, code.as_str(), b),
+                    (CancelReason::Mismatch, "m.mismatched_sas", by_us)
+                );
+            }
+            s => panic!("{s:?}"),
+        }
+    }
+    assert!(ha.confirm().await.is_err());
+    for (d, other) in [(&a, &b), (&b, &a)] {
+        let devices = d.m().devices(&other.auth.user).await.unwrap();
+        assert_eq!(devices[0].trust, Trust::Unverified);
+    }
+}
+
+/// Own devices: the request is declined → the requester sees `m.user`; a
+/// device can not verify itself; unknown devices are refused
+#[tokio::test]
+async fn sas_own_device_cancelled_by_user() {
+    let srv = server();
+    let mut a1 = Device::login(&srv, "A", "A1").await;
+    let mut a2 = Device::login(&srv, "A", "A2").await;
+    sync_all(&mut [&mut a1, &mut a2]).await;
+
+    assert_eq!(
+        a1.m()
+            .request_verification(&a1.auth.user, &a1.auth.device)
+            .await
+            .unwrap_err(),
+        CryptoError::UnknownDevice
+    );
+    assert_eq!(
+        a1.m()
+            .request_verification(&a1.auth.user, &dev("ZZ"))
+            .await
+            .unwrap_err(),
+        CryptoError::UnknownDevice
+    );
+    let h1 = a1
+        .m()
+        .request_verification(&a2.auth.user, &a2.auth.device)
+        .await
+        .unwrap();
+    assert!(h1.is_self_verification());
+    sync_all(&mut [&mut a1, &mut a2]).await;
+    let h2 = a2.last_verification();
+    assert_eq!(h2.state(), SasState::Incoming);
+    h2.cancel().await.unwrap();
+    sync_all(&mut [&mut a2, &mut a1]).await;
+    assert!(matches!(
+        h1.state(),
+        SasState::Cancelled {
+            reason: CancelReason::User,
+            by_us: false,
+            ..
+        }
+    ));
+    assert!(h2.accept().await.is_err());
+    assert!(a1.m().verifications().is_empty() && a2.m().verifications().is_empty());
 }

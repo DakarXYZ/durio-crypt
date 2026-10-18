@@ -1,0 +1,325 @@
+{
+  "emoji": [
+    {
+      "description": "Dog",
+      "index": 0,
+      "symbol": "🐶"
+    },
+    {
+      "description": "Cat",
+      "index": 1,
+      "symbol": "🐱"
+    },
+    {
+      "description": "Lion",
+      "index": 2,
+      "symbol": "🦁"
+    },
+    {
+      "description": "Horse",
+      "index": 3,
+      "symbol": "🐎"
+    },
+    {
+      "description": "Unicorn",
+      "index": 4,
+      "symbol": "🦄"
+    },
+    {
+      "description": "Pig",
+      "index": 5,
+      "symbol": "🐷"
+    },
+    {
+      "description": "Elephant",
+      "index": 6,
+      "symbol": "🐘"
+    },
+    {
+      "description": "Rabbit",
+      "index": 7,
+      "symbol": "🐰"
+    },
+    {
+      "description": "Panda",
+      "index": 8,
+      "symbol": "🐼"
+    },
+    {
+      "description": "Rooster",
+      "index": 9,
+      "symbol": "🐓"
+    },
+    {
+      "description": "Penguin",
+      "index": 10,
+      "symbol": "🐧"
+    },
+    {
+      "description": "Turtle",
+      "index": 11,
+      "symbol": "🐢"
+    },
+    {
+      "description": "Fish",
+      "index": 12,
+      "symbol": "🐟"
+    },
+    {
+      "description": "Octopus",
+      "index": 13,
+      "symbol": "🐙"
+    },
+    {
+      "description": "Butterfly",
+      "index": 14,
+      "symbol": "🦋"
+    },
+    {
+      "description": "Flower",
+      "index": 15,
+      "symbol": "🌷"
+    },
+    {
+      "description": "Tree",
+      "index": 16,
+      "symbol": "🌳"
+    },
+    {
+      "description": "Cactus",
+      "index": 17,
+      "symbol": "🌵"
+    },
+    {
+      "description": "Mushroom",
+      "index": 18,
+      "symbol": "🍄"
+    },
+    {
+      "description": "Globe",
+      "index": 19,
+      "symbol": "🌏"
+    },
+    {
+      "description": "Moon",
+      "index": 20,
+      "symbol": "🌙"
+    },
+    {
+      "description": "Cloud",
+      "index": 21,
+      "symbol": "☁️"
+    },
+    {
+      "description": "Fire",
+      "index": 22,
+      "symbol": "🔥"
+    },
+    {
+      "description": "Banana",
+      "index": 23,
+      "symbol": "🍌"
+    },
+    {
+      "description": "Apple",
+      "index": 24,
+      "symbol": "🍎"
+    },
+    {
+      "description": "Strawberry",
+      "index": 25,
+      "symbol": "🍓"
+    },
+    {
+      "description": "Corn",
+      "index": 26,
+      "symbol": "🌽"
+    },
+    {
+      "description": "Pizza",
+      "index": 27,
+      "symbol": "🍕"
+    },
+    {
+      "description": "Cake",
+      "index": 28,
+      "symbol": "🎂"
+    },
+    {
+      "description": "Heart",
+      "index": 29,
+      "symbol": "❤️"
+    },
+    {
+      "description": "Smiley",
+      "index": 30,
+      "symbol": "😀"
+    },
+    {
+      "description": "Robot",
+      "index": 31,
+      "symbol": "🤖"
+    },
+    {
+      "description": "Hat",
+      "index": 32,
+      "symbol": "🎩"
+    },
+    {
+      "description": "Glasses",
+      "index": 33,
+      "symbol": "👓"
+    },
+    {
+      "description": "Spanner",
+      "index": 34,
+      "symbol": "🔧"
+    },
+    {
+      "description": "Santa",
+      "index": 35,
+      "symbol": "🎅"
+    },
+    {
+      "description": "Thumbs Up",
+      "index": 36,
+      "symbol": "👍"
+    },
+    {
+      "description": "Umbrella",
+      "index": 37,
+      "symbol": "☂️"
+    },
+    {
+      "description": "Hourglass",
+      "index": 38,
+      "symbol": "⌛"
+    },
+    {
+      "description": "Clock",
+      "index": 39,
+      "symbol": "⏰"
+    },
+    {
+      "description": "Gift",
+      "index": 40,
+      "symbol": "🎁"
+    },
+    {
+      "description": "Light Bulb",
+      "index": 41,
+      "symbol": "💡"
+    },
+    {
+      "description": "Book",
+      "index": 42,
+      "symbol": "📕"
+    },
+    {
+      "description": "Pencil",
+      "index": 43,
+      "symbol": "✏️"
+    },
+    {
+      "description": "Paperclip",
+      "index": 44,
+      "symbol": "📎"
+    },
+    {
+      "description": "Scissors",
+      "index": 45,
+      "symbol": "✂️"
+    },
+    {
+      "description": "Lock",
+      "index": 46,
+      "symbol": "🔒"
+    },
+    {
+      "description": "Key",
+      "index": 47,
+      "symbol": "🔑"
+    },
+    {
+      "description": "Hammer",
+      "index": 48,
+      "symbol": "🔨"
+    },
+    {
+      "description": "Telephone",
+      "index": 49,
+      "symbol": "☎️"
+    },
+    {
+      "description": "Flag",
+      "index": 50,
+      "symbol": "🏁"
+    },
+    {
+      "description": "Train",
+      "index": 51,
+      "symbol": "🚂"
+    },
+    {
+      "description": "Bicycle",
+      "index": 52,
+      "symbol": "🚲"
+    },
+    {
+      "description": "Aeroplane",
+      "index": 53,
+      "symbol": "✈️"
+    },
+    {
+      "description": "Rocket",
+      "index": 54,
+      "symbol": "🚀"
+    },
+    {
+      "description": "Trophy",
+      "index": 55,
+      "symbol": "🏆"
+    },
+    {
+      "description": "Ball",
+      "index": 56,
+      "symbol": "⚽"
+    },
+    {
+      "description": "Guitar",
+      "index": 57,
+      "symbol": "🎸"
+    },
+    {
+      "description": "Trumpet",
+      "index": 58,
+      "symbol": "🎺"
+    },
+    {
+      "description": "Bell",
+      "index": 59,
+      "symbol": "🔔"
+    },
+    {
+      "description": "Anchor",
+      "index": 60,
+      "symbol": "⚓"
+    },
+    {
+      "description": "Headphones",
+      "index": 61,
+      "symbol": "🎧"
+    },
+    {
+      "description": "Folder",
+      "index": 62,
+      "symbol": "📁"
+    },
+    {
+      "description": "Pin",
+      "index": 63,
+      "symbol": "📌"
+    }
+  ],
+  "note": "Matrix sas-emoji.json: index → symbol, English description (translation key)"
+}
