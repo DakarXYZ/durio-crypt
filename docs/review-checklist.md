@@ -96,7 +96,7 @@
 | A3 | ✅ | `machine.rs:1211` (таблица), `:1120-1150` (поиск сессии в других каналах, ≤ 512) | `megolm_error_table`, `s07_server_tampering` |
 | A4 | ✅ | `machine.rs:1035-1055`: `imported`/`forwarder_data` → `Unauthenticated`, `Verified` = `is_verified()` после SAS | `s03_backup_restore_with_recovery_key`, `export_import_into_fresh_store`, `import_does_not_downgrade_known_sessions` |
 | A5 | ✅ | `verification.rs:526` автопринятие; библиотека принимает `start` только в Ready (`requests.rs::receive_start` 0.19.1) | `sas_mismatch_cancels_and_trusts_nothing`, `sas_through_handles` |
-| B1–B5 | ✅ | `binding.rs:87-157`, `:171`; `machine.rs` (`reply_mismatch`); `payload.rs::from_value` (тип) | `replay_and_rollback`, `tables_are_bounded`, `cr19_*` в `scenarios.rs`, `store_v010_opens_in_current_version` (таблицы после обновления) |
+| B1–B5 | ✅ | `binding.rs:87-157`, `:171`, `binding::reply_mismatch` (множества, O-4); `payload.rs::from_value` (тип) | `replay_and_rollback`, `tables_are_bounded`, `cr19_*` в `scenarios.rs`, `store_v010_opens_in_current_version` (таблицы после обновления) |
 | C1 | ✅ | `store.rs:36-60`; FFI `types.rs:49-60` (обнуление копии) | `wrong_key_or_account_is_refused`, `store_key_and_attachment_keys_are_redacted` |
 | C2 | ✅ | `store.rs:100` (замок до `open_with_key`), `:140` | `one_writer_per_store`, `exclusive_until_dropped` |
 | C3 | ✅ | `binding.rs:28-29`, `backup.rs:56-60`, `outbox.rs` (`stoat.outbox.retries.v1`), `machine.rs` (`stoat.channel.*`, `stoat.channels.v1`) | `channel_state_and_replay_table_persist` |
@@ -104,9 +104,9 @@
 | C5 | ✅ | `fixtures/stores/v010`, `v016` | `store_v010_opens_in_current_version`, `store_016_migrates_to_019` |
 | D1 | ✅ | `machine.rs:515-521` (токен в `EncryptionSyncChanges`) | `s12_crash_between_processing_and_ack`, `duplicated_and_reordered_mailbox` |
 | D2–D3 | ✅ | `machine.rs:543-575`: `processed` обновляется после каждого события; ошибка прерывает пачку, уже обработанное — дубль при повторе | `delivery.rs`, `property.rs` (дубли, краш до ack) |
-| D4 | ✅ | `outbox.rs` (`MAX_RETRIES` 256, `to_device_retry_attempts` 8, `gave_up`) | `full_mailboxes_are_retried_then_given_up` |
+| D4 | ✅ | `outbox.rs` (`MAX_RETRIES` 256, `to_device_retry_attempts` 8, `gave_up`; свои запросы — пауза и отказ, O-2) | `full_mailboxes_are_retried_then_given_up`, `own_requests_refused_for_good_are_dropped` |
 | D5 | ✅ | `gossip.rs:144` (своё проверенное устройство), `machine.rs` `decrypt_failed` (чужой канал → `ChannelMismatch` без запроса) | `scenarios.rs` (CR-08) |
-| E1 | ✅ | FFI `runtime.rs:44`, `:66` | `panics_become_typed_errors`, `async_panics_become_typed_errors` |
+| E1 | ✅ | FFI `runtime.rs` `run`, `run_blocking` (O-1), `guard` | `panics_become_typed_errors`, `async_panics_become_typed_errors`, `blocking_work_leaves_the_workers_free` |
 | E2 | ✅ | FFI `error.rs` (текст из `Display` ядра), ядро `error.rs` | `recovery_key_never_in_debug_or_errors`, `wrong_passphrase_or_broken_file` |
 | E3 | ✅ | FFI `types.rs:731` (`secret_string`), `:54` | `backup_errors_are_typed`, `key_export_and_import` |
 | E4 | ✅ | FFI `runtime.rs:99` (`InRuntime`) | `close_outside_any_runtime`, `BindingsJvmTest.sqliteStore` |
@@ -117,8 +117,8 @@
 | G1 | ✅ | `store.rs` (`StoreKey`), `backup.rs:84-92` (`RecoveryState: ZeroizeOnDrop`), `:450`, `:568`, `proto/recovery_key.rs`, `attachments.rs`, FFI `secret_string` | `debug_has_no_key`, `setup_debug_has_no_key` |
 | H1 | ✅ | `attachments.rs:169` (`ct_eq`); MAC — `matrix-sdk-crypto` (`verify_mac`, `SecretStorageKey::decrypt`) | `swapped_or_truncated_blob_yields_no_plaintext` |
 | I1 | ✅ | `Cargo.toml` `[workspace.lints.rust] unsafe_code = "forbid"`; у всех крейтов `lints.workspace = true` | компиляция |
-| J1 | ✅ | `envelope.rs` (`MAX_CIPHERTEXT_LEN` до разбора), `backup.rs:287` (≤ 1 000 000 раундов), `export.rs:75-93` (версия, длина, раунды 1…1 000 000) | `absurd_pbkdf2_rounds_are_refused_before_hashing`, `header_is_checked_before_the_library` |
-| J2 | ✅ | `fuzz/`: `envelope`, `payload`, `api`, `recovery_key` — по 60 с на проходе: 1,34 M / 1,25 M / 0,68 M / 6,0 M запусков, падений нет | ночной `fuzz.yml` |
+| J1 | ✅ | `envelope.rs` (`MAX_CIPHERTEXT_LEN` до разбора), `backup.rs:287` (≤ 1 000 000 раундов), `proto/key_export.rs` (≤ 64 МиБ, версия, длина, раунды 1…1 000 000; O-7, O-8) | `absurd_pbkdf2_rounds_are_refused_before_hashing`, `header_fields_are_checked`, `oversized_files_are_refused_first` |
+| J2 | ✅ | `fuzz/`: `envelope`, `payload`, `api`, `recovery_key`, `key_export` — по 60 с на проходе: 1,34 M / 1,25 M / 0,68 M / 6,0 M / 11,9 M запусков, падений нет | ночной `fuzz.yml` |
 | K1 | ✅ | `cargo deny check`: advisories ok, bans ok, licenses ok, sources ok (19 предупреждений о дублях версий, один новый — `hashbrown 0.16` через dev-зависимость `rusqlite` теста CR-23, только wasm-ветка) | — |
 
 ## 3. Находки
@@ -128,28 +128,25 @@
 | R1 | `#[derive(Debug)]` у `CryptoMachine` (и пробрасывающий его FFI-объект) печатал внутреннее состояние: id участников каналов, id ящика, тела повторов to_device и зашифрованные события, ждущие запроса ключа | исправлено `e745394`, тест `machine_debug_names_the_account_only` |
 | R2 | Документация FFI называла «не логировать» только `DecryptedMessage`, `StoreConfig`, `RecoverySetup`; `toString()` Kotlin-записей `EncryptedAttachment` (ключ AES в `fileJson`), `DecryptResult.Decrypted` и `KeyExport` тоже нельзя логировать | исправлено (документация, этот коммит); правило линтера в Android — O-5 |
 
-## 4. Открыто (решения, не дефекты)
+## 4. Открытые пункты прохода 1 — закрыты (блок 5A, дополнение, 2026-10-18)
 
-- **O-1. PBKDF2 на рабочем потоке рантайма.** Экспорт/импорт файла и разблокировка бэкапа паролем считают
-  500 000 раундов SHA-512 внутри async-задачи (≈ 0,3–1,5 с на телефоне); у FFI-рантайма 2 рабочих потока.
-  Вариант — `spawn_blocking` для этих трёх вызовов в FFI.
-- **O-2. Свои запросы при постоянной 4xx.** Запрос ядра (`SecretPut`, свой to_device верификации/отмены)
-  после `mark_request_failed` возвращается в каждом проходе; при постоянной 4xx (не 401/429) — бесконечно.
-  Хост обязан делать паузу (документация крейта). Вариант — сбрасывать свои to_device после N неудач.
-- **O-3. `set_device_trust(Verified)` доступен через FFI** в обход SAS. Нужен тестам и, возможно, «доверию
-  при первой встрече»; UI 5B не должен вызывать его с `Verified` иначе как после `SasState::Done`.
-- **O-4. `reply_mismatch` сравнивает списки с порядком.** Бэкенд хранит `replies` в порядке запроса, поэтому
-  ложных срабатываний нет; если бэкенд начнёт переупорядочивать — сравнивать множества.
-- **O-5. Kotlin `toString()` записей с секретами.** UniFFI не даёт переопределить `toString` у `data class`;
-  защита — документация (R2) и правило ревью/линтера в `:core:crypto` (Android, 5B): не логировать
-  `DecryptResult`, `DecryptedMessage`, `RecoverySetup`, `EncryptedAttachment`, `KeyExport`.
-- **O-6. Уровень логов библиотеки в хосте.** Ядро подписчика `tracing` не ставит; если Android добавит мост
-  `tracing` → Logcat, то уровень `warn` и без полей событий (у библиотеки в `info`/`debug` есть id сессий и
-  ключи отправителей).
-- **O-7. Фазз-цель для заголовка файла экспорта.** `check_header` в ядре (тянет `matrix-sdk-crypto` в
-  fuzz-workspace на nightly); покрыт табличным тестом. Вынести разбор заголовка в `proto` и добавить цель.
-- **O-8. Неудачный импорт слишком большого файла.** Размер файла экспорта не ограничен (файл выбирает
-  пользователь); UI может ограничить, например, 64 МБ.
+| # | Решение | Коммит | Тест |
+| --- | --- | --- | --- |
+| O-1 | ✅ PBKDF2-тяжёлые вызовы FFI (`export_room_keys`, `import_room_keys`, `unlock_backup`, `create_recovery` с паролем) — на блокирующем пуле рантайма (`runtime.rs::run_blocking`), оба рабочих потока свободны | `76498ae` | `blocking_work_leaves_the_workers_free` |
+| O-2 | ✅ Свои запросы ядра после неудачи — пауза `own_retry_ms` (1 с ×2, ≤ 15 мин, в `wakeup_in_ms`); после 3 постоянных отказов (4xx кроме 401/408/429) — выброшены, `RequestRejected`, `debug_report.requests.rejected`; выброшенный `SecretPut` уходит и из очереди в хранилище; повтор полного ящика при постоянном отказе сдаёт устройства. ADR A8, контракт хоста в документации крейта | `31fa59b`, `ff0b20f` | `own_requests_back_off_then_are_dropped`, `retries_refused_for_good_give_up_their_devices`, `own_requests_refused_for_good_are_dropped` |
+| O-3 | ⚠️ оставлено: `set_device_trust(Verified)` нужен тестам; контракт хоста, ядро и FFI явно говорят — хост ставит только `Unverified`/`Blocked`, `Verified` даёт SAS `Done`; Android закрепляет в `:core:crypto` (5B) | `c6e463d` | — |
+| O-4 | ✅ `in_reply_to` и `replies` сравниваются как множества: бэкенд убирает повторы id (`stoatchat` `messages/model.rs`, первое вхождение), порядок сохраняет — повтор id в `in_reply_to` давал ложный `reply_mismatch`; лишний/пропавший id по-прежнему помечается. `protocol.md` дополнен | `d6a583e` | `replies_compare_as_sets`, `s07_server_tampering` |
+| O-5 | ⚠️ без изменений: защита — документация и правило в Android (5B) | — | — |
+| O-6 | ⚠️ без изменений: уровень логов — у хоста (5B) | — | — |
+| O-7 | ✅ Разбор заголовка — `proto::key_export::parse` (нормализация base64 без паддинга), ядро вызывает его до библиотеки; fuzz-цель `key_export` (+ в `fuzz.yml`): 60 с, 11,9 M запусков, падений нет | `7208cc8` | `header_fields_are_checked`, `overlapping_armor_is_refused` |
+| O-8 | ✅ Предел файла экспорта 64 МиБ (`key_export::MAX_FILE_LEN`, ≈ 90 000 сессий): длиннее — `InvalidKeyFile` до любой обработки; экспорт сверх предела не пишется (`InvalidKeyFile`: экспортировать меньше каналов) | `2d02958` | `oversized_files_are_refused_first`, `wrong_passphrase_or_broken_file` |
+
+Строки таблицы §2 обновлены: E1 (`run_blocking`), J1 (`key_export.rs`, предел файла), J2 (цель `key_export`),
+D4 (отказы своих запросов), B1–B5 (ответы как множества).
+
+## 5. Открыто (решения, не дефекты)
+
+- **O-3, O-5, O-6** — см. §4: закрываются на стороне Android (5B).
 - Ослабления прошлых этапов (вытеснение таблиц CR-19, ≤ 512 каналов при поиске переноса, запросы ключей
   только к своим проверенным устройствам, подделываемость бэкапа v1, PBKDF2 для пароля, таймауты SAS) —
   `docs/security-review.md` §3, без изменений.
