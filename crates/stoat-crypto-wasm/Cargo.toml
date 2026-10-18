@@ -1,0 +1,36 @@
+[package]
+name = "stoat-crypto-wasm"
+description = "dur.io crypto core for for-web (Windows client): wasm-bindgen bindings over stoat-crypto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lib]
+# cdylib: the .wasm of `@durio/stoat-crypto` (bindings/web); rlib: the tests
+crate-type = ["cdylib", "rlib"]
+
+# Everything is wasm32 only: on the host the crate is empty, so the native
+# workspace build and clippy do not pull wasm-bindgen in.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+stoat-crypto.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+zeroize.workspace = true
+async-lock.workspace = true
+# CR-14 (C25): the CLI that post-processes the .wasm must be this exact version
+wasm-bindgen = "=0.2.129"
+wasm-bindgen-futures = "0.4.79"
+js-sys = "0.3.106"
+serde-wasm-bindgen = "0.6.5"
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+stoat-crypto-fakeserver.workspace = true
+wasm-bindgen-test = "0.3.79"
+# rand 0.8 of the fake server: browser/Node RNG on wasm32
+getrandom_02 = { package = "getrandom", version = "0.2", features = ["js"] }
+
+[lints]
+workspace = true
