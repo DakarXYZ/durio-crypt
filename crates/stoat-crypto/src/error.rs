@@ -42,6 +42,33 @@ pub enum CryptoError {
     /// The verification action does not apply in the flow's current state
     #[error("verification step not possible now")]
     VerificationNotActive,
+    /// Creating a backup version over an existing one needs an MFA ticket:
+    /// run the same request again with `x-mfa-ticket`
+    #[error("this step needs an MFA ticket")]
+    MfaRequired,
+    /// The backup was replaced or deleted on another device: uploads stopped
+    /// until it is unlocked with the recovery key
+    #[error("the key backup was replaced elsewhere")]
+    BackupVersionChanged,
+    /// No unlocked backup on this device
+    #[error("no key backup on this device")]
+    NoBackup,
+    /// Recovery was not set up (or not unlocked) on this device
+    #[error("recovery is not set up on this device")]
+    NoRecovery,
+    /// The input is shaped like a recovery key but has a typo
+    #[error("the recovery key has a typo")]
+    RecoveryKeyTypo,
+    /// Neither the recovery key nor the passphrase of the secret storage
+    #[error("wrong recovery key or passphrase")]
+    WrongRecoveryKey,
+    /// The backup on the server is not the one the recovery key belongs to
+    #[error("the backup does not match the recovery key")]
+    BackupKeyMismatch,
+    /// Secret storage or backup data from the server is malformed or
+    /// tampered with
+    #[error("invalid recovery data")]
+    InvalidRecoveryData,
     /// An `EncryptedFile` is not a valid v2 object
     #[error("invalid encrypted file description")]
     InvalidAttachment,
@@ -68,6 +95,14 @@ impl CryptoError {
             Self::RoomKeyNotShared => "room_key_not_shared",
             Self::PayloadTooLarge => "payload_too_large",
             Self::InvalidPayload => "invalid_payload",
+            Self::MfaRequired => "mfa_required",
+            Self::BackupVersionChanged => "backup_version_changed",
+            Self::NoBackup => "no_backup",
+            Self::NoRecovery => "no_recovery",
+            Self::RecoveryKeyTypo => "recovery_key_typo",
+            Self::WrongRecoveryKey => "wrong_recovery_key",
+            Self::BackupKeyMismatch => "backup_key_mismatch",
+            Self::InvalidRecoveryData => "invalid_recovery_data",
             Self::UnknownDevice => "unknown_device",
             Self::VerificationNotActive => "verification_not_active",
             Self::InvalidAttachment => "invalid_attachment",

@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use serde_json::Value;
+use serde_json::{Value, json};
 use stoat_crypto_proto::api::*;
 use stoat_crypto_proto::envelope::{EncryptedEnvelope, EnvelopeError};
 use stoat_crypto_proto::events::E2eeEvent;
@@ -247,4 +247,55 @@ fn recovery_key_format() {
     let k = read("backup/recovery_key.json");
     let key = k["recovery_key"].as_str().unwrap();
     assert_eq!(key.len(), 48);
+}
+
+/// Recovery key vectors (CR-12): key bytes → display form, and inputs the
+/// UI must classify as a typo or as "not a key" (`DUMP_FIXTURES=1` rewrites)
+#[test]
+fn recovery_key_vectors() {
+    use stoat_crypto_proto::recovery_key::{self, RecoveryKeyError};
+
+    let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+    let keys: [[u8; 32]; 3] = [[0; 32], std::array::from_fn(|i| i as u8), [0xff; 32]];
+    let valid: Vec<Value> = keys
+        .iter()
+        .map(|k| json!({ "key_hex": hex(k), "recovery_key": recovery_key::encode(k).as_str() }))
+        .collect();
+    let good = recovery_key::encode(&keys[1]).replace(' ', "");
+    let swap = |i: usize, c: char| -> String {
+        let mut v: Vec<char> = good.chars().collect();
+        v[i] = if v[i] == c { 'z' } else { c };
+        v.into_iter().collect()
+    };
+    let invalid = [
+        (swap(30, 'A'), "typo"),
+        (swap(7, '0'), "typo"),
+        (good[..44].to_owned(), "not_a_key"),
+        ("correct horse battery staple".to_owned(), "not_a_key"),
+    ];
+    for (input, kind) in &invalid {
+        let e = recovery_key::decode(input).unwrap_err();
+        let expected = if *kind == "typo" {
+            RecoveryKeyError::Typo
+        } else {
+            RecoveryKeyError::NotAKey
+        };
+        assert_eq!(e, expected, "{input}");
+    }
+    let value = json!({
+        "note": "base58(0x8B 0x01 || key || parity), 48 chars in groups of 4; whitespace ignored on input",
+        "valid": valid,
+        "invalid": invalid.iter().map(|(i, k)| json!({ "input": i, "error": k })).collect::<Vec<_>>(),
+    });
+    let rel = "backup/recovery_key.vectors.json";
+    let text = serde_json::to_string_pretty(&value).unwrap() + "\n";
+    if std::env::var_os("DUMP_FIXTURES").is_some() {
+        std::fs::write(root().join(rel), &text).unwrap();
+    }
+    let committed = std::fs::read_to_string(root().join(rel)).unwrap().replace("\r\n", "\n");
+    assert_eq!(committed, text, "{rel} is stale: DUMP_FIXTURES=1");
+    for v in value["valid"].as_array().unwrap() {
+        let decoded = recovery_key::decode(v["recovery_key"].as_str().unwrap()).unwrap();
+        assert_eq!(hex(decoded.as_slice()), v["key_hex"]);
+    }
 }

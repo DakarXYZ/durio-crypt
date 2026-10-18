@@ -74,6 +74,32 @@
 //!   the pass it triggers cancels expired flows (`Timeout`). Emoji: index
 //!   into [`SAS_EMOJI`], description = translation key.
 //!
+//! ## Key backup and recovery (CR-12)
+//!
+//! * **Set up** (settings → "Recovery"): [`create_recovery`] (optional
+//!   passphrase) → show `recovery_key()` once, have it written down → run
+//!   `request` (`POST /e2ee/backup/version`) and mark it. A 401 →
+//!   `MfaRequired` (a backup exists): get an MFA ticket, run **the same
+//!   request** again with `x-mfa-ticket`. Once marked sent the backup is on;
+//!   the secret uploads (`RequestKind::SecretPut`, survive restarts) and the
+//!   key uploads (`RequestKind::BackupKeys`, batches of 100) come from the
+//!   normal request passes. [`rotate_backup`]: the same with a new backup key
+//!   under the same recovery key (always needs MFA).
+//! * **Restore** (new device): `GET /e2ee/secrets/m.secret_storage.default_key`
+//!   → `{key: id}` → `GET …/m.secret_storage.key.<id>`, `GET
+//!   …/m.megolm_backup.v1`, `GET /e2ee/backup/version` → [`unlock_backup`]
+//!   (input = recovery key or passphrase; `RecoveryKeyTypo` vs
+//!   `WrongRecoveryKey`) → `GET /e2ee/backup/keys?version=<v>` →
+//!   [`restore_backup`] → `next()` until finished (progress bar) → re-decrypt
+//!   messages waiting for keys. Restored keys show `Unauthenticated`.
+//! * **Replaced elsewhere**: `mark_request_failed` on `BackupKeys` returns
+//!   `BackupVersionChanged`; [`backup_status`] says `outdated` → ask for the
+//!   recovery key and unlock again. Never upload to a version this device
+//!   did not unlock.
+//!
+//! After a failed request, back off before the next pass: a request the
+//! core keeps (secrets, backup batch, own to-device) comes back every pass.
+//!
 //! ## Attachments (CR-10)
 //!
 //! * **Upload**: per file [`AttachmentEncryptor::new`] → `update` per chunk
@@ -108,8 +134,14 @@
 //! [`undelivered_devices`]: CryptoMachine::undelivered_devices
 //! [`request_verification`]: CryptoMachine::request_verification
 //! [`verification`]: CryptoMachine::verification
+//! [`create_recovery`]: CryptoMachine::create_recovery
+//! [`rotate_backup`]: CryptoMachine::rotate_backup
+//! [`unlock_backup`]: CryptoMachine::unlock_backup
+//! [`restore_backup`]: CryptoMachine::restore_backup
+//! [`backup_status`]: CryptoMachine::backup_status
 
 mod attachments;
+mod backup;
 mod batch;
 mod binding;
 mod error;
@@ -128,6 +160,7 @@ pub use attachments::{
     ATTACHMENT_CHUNK, AttachmentDecryptor, AttachmentEncryptor, AttachmentVerifier, decrypt_attachment,
     encrypt_attachment,
 };
+pub use backup::{BackupRestore, BackupStatus, RESTORE_BATCH, RecoverySecrets, RecoverySetup, RestoreProgress};
 pub use batch::ServerLimits;
 pub use error::{CryptoError, DecryptError, DecryptFailureKind, Result, WithheldReason};
 pub use machine::CryptoMachine;

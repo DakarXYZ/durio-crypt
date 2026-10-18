@@ -25,6 +25,7 @@ pub mod envelope;
 pub mod events;
 pub mod ids;
 pub mod payload;
+pub mod recovery_key;
 pub mod to_device;
 
 mod redact;

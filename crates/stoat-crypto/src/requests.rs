@@ -34,6 +34,12 @@ pub enum RequestKind {
     KeysClaim,
     /// `PUT /e2ee/to_device/<txn_id>`
     ToDevice,
+    /// `POST /e2ee/backup/version` (recovery setup; may need an MFA ticket)
+    BackupVersionCreate,
+    /// `PUT /e2ee/backup/keys?version=<v>` (background upload)
+    BackupKeys,
+    /// `PUT /e2ee/secrets/<type>`
+    SecretPut,
 }
 
 impl RequestKind {
@@ -43,6 +49,9 @@ impl RequestKind {
             Self::KeysQuery => "keys_query",
             Self::KeysClaim => "keys_claim",
             Self::ToDevice => "to_device",
+            Self::BackupVersionCreate => "backup_version_create",
+            Self::BackupKeys => "backup_keys",
+            Self::SecretPut => "secret_put",
         }
     }
 }
@@ -183,6 +192,10 @@ impl Response {
             RequestKind::KeysQuery => Self::KeysQuery(parse(body, "keys query")?),
             RequestKind::KeysClaim => Self::KeysClaim(parse(body, "keys claim")?),
             RequestKind::ToDevice => Self::ToDevice(parse(body, "to-device")?),
+            // handled by the backup module, never the library
+            RequestKind::BackupVersionCreate | RequestKind::BackupKeys | RequestKind::SecretPut => {
+                return Err(CryptoError::Internal("not a library request"));
+            }
         })
     }
 

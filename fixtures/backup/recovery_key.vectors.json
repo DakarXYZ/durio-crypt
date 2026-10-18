@@ -1,0 +1,35 @@
+{
+  "invalid": [
+    {
+      "error": "typo",
+      "input": "EsSzykH7LCZx7CaecmKDwcmYJRXiYbAu8iQ3t8EznRwKpUY1"
+    },
+    {
+      "error": "typo",
+      "input": "EsSzykH0LCZx7CaecmKDwcmYJRXiYbtu8iQ3t8EznRwKpUY1"
+    },
+    {
+      "error": "not_a_key",
+      "input": "EsSzykH7LCZx7CaecmKDwcmYJRXiYbtu8iQ3t8EznRwK"
+    },
+    {
+      "error": "not_a_key",
+      "input": "correct horse battery staple"
+    }
+  ],
+  "note": "base58(0x8B 0x01 || key || parity), 48 chars in groups of 4; whitespace ignored on input",
+  "valid": [
+    {
+      "key_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "recovery_key": "EsSz ygLv VP1b xF1C v7kE eBQx MxDP buG5 w25T L3b6 hfyG Kkrd"
+    },
+    {
+      "key_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "recovery_key": "EsSz ykH7 LCZx 7Cae cmKD wcmY JRXi Ybtu 8iQ3 t8Ez nRwK pUY1"
+    },
+    {
+      "key_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "recovery_key": "EsUK 2TRo ZKTB CKmv wEDA o6rq tTYu aKzp eJ9f 95nM 3VHk Xbnq"
+    }
+  ]
+}

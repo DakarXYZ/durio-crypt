@@ -40,6 +40,7 @@ use stoat_crypto_proto::api::{KeysCountResponse, ToDeviceMessage};
 use stoat_crypto_proto::envelope::{EncryptedEnvelope, MAX_CIPHERTEXT_LEN};
 use stoat_crypto_proto::payload::{EVENT_TYPE, MegolmPlaintext, MessagePayload, PayloadError};
 
+use crate::backup::PendingRecovery;
 use crate::batch::ServerLimits;
 use crate::binding::{self, Seen};
 use crate::error::{CryptoError, DecryptError, Result, WithheldReason};
@@ -108,6 +109,8 @@ struct Inner {
     binding: binding::Tables,
     /// CR-11: verification flows and their last state
     flows: SyncMutex<Flows>,
+    /// CR-12: a backup being set up, until the server created the version
+    recovery: Mutex<Option<PendingRecovery>>,
     /// dropped last: the store must close before the lock is released
     _opened_lock: StoreLockHolder,
 }
@@ -161,7 +164,7 @@ impl CryptoMachine {
                 .unwrap_or_default(),
         );
 
-        Ok(Self {
+        let this = Self {
             inner: Arc::new(Inner {
                 machine,
                 user_ulid: user.to_ascii_uppercase(),
@@ -177,12 +180,19 @@ impl CryptoMachine {
                 key_requests: SyncMutex::new(KeyRequests::default()),
                 binding: binding::Tables::default(),
                 flows: SyncMutex::new(Flows::default()),
+                recovery: Mutex::new(None),
                 _opened_lock: StoreLockHolder {
                     #[cfg(not(target_arch = "wasm32"))]
                     _lock: lock,
                 },
             }),
-        })
+        };
+        // CR-12: keep backing up; secrets not confirmed by the server go again
+        this.resume_backup().await?;
+        for p in this.pending_secrets().await? {
+            this.add_own_request(p.request()).await;
+        }
+        Ok(this)
     }
 
     /// Delete the store of a signed-out account (files, not rows). The
@@ -240,8 +250,12 @@ impl CryptoMachine {
         *self.inner.timing.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    pub(crate) async fn recovery_pending(&self) -> async_lock::MutexGuard<'_, Option<PendingRecovery>> {
+        self.inner.recovery.lock().await
+    }
+
     /// Something the library requests depend on changed
-    fn touch(&self) {
+    pub(crate) fn touch(&self) {
         self.inner.dirty.store(true, Ordering::SeqCst);
     }
 
@@ -313,12 +327,26 @@ impl CryptoMachine {
             }
         }
         out.extend(ob.own_and_due());
+        drop(ob);
+        // CR-12: the next batch of room keys for the backup (one in flight;
+        // the library hands out the same request until it is marked)
+        out.extend(self.backup_request().await?);
         Ok(out)
     }
 
     /// Report a successful response (`body` = response JSON; may be empty
     /// for 204)
     pub async fn mark_request_sent(&self, id: &str, kind: RequestKind, body: &str) -> Result<()> {
+        // CR-12: our own requests, not the library's
+        match kind {
+            RequestKind::BackupVersionCreate => return self.backup_version_created(id, body).await,
+            RequestKind::BackupKeys => return self.backup_keys_sent(id, body).await,
+            RequestKind::SecretPut => {
+                self.inner.outbox.lock().await.own_done(id);
+                return self.secret_stored(id).await;
+            }
+            _ => {}
+        }
         let response = Response::parse(kind, body)?;
         self.touch();
         let mut ob = self.inner.outbox.lock().await;
@@ -353,6 +381,15 @@ impl CryptoMachine {
     /// means the server has other keys for this device.
     pub async fn mark_request_failed(&self, id: &str, kind: RequestKind, status: u16) -> Result<()> {
         self.touch();
+        match (kind, status) {
+            // run the same request again with `x-mfa-ticket`
+            (RequestKind::BackupVersionCreate, 401 | 403) => return Err(CryptoError::MfaRequired),
+            (RequestKind::BackupVersionCreate, _) => return Ok(()),
+            (RequestKind::BackupKeys, 404 | 409) => return self.backup_replaced().await,
+            // the library keeps the batch and hands it out again
+            (RequestKind::BackupKeys, _) => return Ok(()),
+            _ => {}
+        }
         let mut ob = self.inner.outbox.lock().await;
         if ob.is_retry(id) {
             ob.retry_failed(id);

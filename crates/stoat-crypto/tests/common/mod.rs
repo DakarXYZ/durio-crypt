@@ -8,8 +8,9 @@ use serde_json::Value;
 use stoat_crypto::proto::api::{self, KeysCountResponse, ToDeviceFetchResponse};
 use stoat_crypto::proto::{EncryptedEnvelope, MessagePayload};
 use stoat_crypto::{
-    ChannelEncryptionSettings, CryptoMachine, DecryptError, DecryptedMessage, IncomingEncryptedMessage,
-    OutgoingRequest, SasHandle, SasState, StoreConfig, StoreKey, Timing, ToDeviceResult, Trust,
+    BackupRestore, ChannelEncryptionSettings, CryptoError, CryptoMachine, DecryptError, DecryptedMessage,
+    IncomingEncryptedMessage, OutgoingRequest, RecoverySecrets, RecoverySetup, RestoreProgress, SasHandle, SasState,
+    StoreConfig, StoreKey, Timing, ToDeviceResult, Trust,
 };
 use stoat_crypto_fakeserver::{Auth, FakeServer, Server, StoredMessage};
 
@@ -53,6 +54,8 @@ pub struct Device {
     pub crash_before_ack: bool,
     /// accumulated results of every mailbox pass
     pub received: ToDeviceResult,
+    /// errors `mark_request_failed` reported (MFA needed, backup replaced…)
+    pub errors: std::sync::Mutex<Vec<CryptoError>>,
 }
 
 impl Device {
@@ -77,6 +80,7 @@ impl Device {
             inbox_limit: 100,
             crash_before_ack: false,
             received: ToDeviceResult::default(),
+            errors: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -129,7 +133,7 @@ impl Device {
             .collect()
     }
 
-    fn call(&self, method: &str, path: &str, body: Option<&Value>) -> stoat_crypto_fakeserver::Response {
+    pub fn call(&self, method: &str, path: &str, body: Option<&Value>) -> stoat_crypto_fakeserver::Response {
         self.server.lock().unwrap().handle(&self.auth, method, path, body)
     }
 
@@ -142,7 +146,9 @@ impl Device {
                 .await
                 .unwrap();
         } else {
-            self.m().mark_request_failed(&r.id, r.kind, resp.status).await.unwrap();
+            if let Err(e) = self.m().mark_request_failed(&r.id, r.kind, resp.status).await {
+                self.errors.lock().unwrap().push(e);
+            }
         }
     }
 
@@ -365,4 +371,67 @@ pub async fn sas_verify(a: &mut Device, b: &mut Device) {
     }
     assert_eq!(ha.state(), SasState::Done);
     assert_eq!(hb.state(), SasState::Done);
+}
+
+impl Device {
+    /// Run a recovery setup request; `mfa` = the user passed MFA first
+    pub async fn run_setup(&self, setup: &RecoverySetup, mfa: bool) -> Result<(), CryptoError> {
+        if mfa {
+            self.server.lock().unwrap().grant_mfa_ticket(&self.auth.user);
+        }
+        let r = &setup.request;
+        let body: Value = serde_json::from_str(&r.body).unwrap();
+        let resp = self.call(r.method, &r.path, Some(&body));
+        if !resp.is_success() {
+            return self.m().mark_request_failed(&r.id, r.kind, resp.status).await;
+        }
+        self.m().mark_request_sent(&r.id, r.kind, &resp.body.to_string()).await
+    }
+
+    /// Set up recovery and the backup (first one: no MFA); returns the key
+    pub async fn setup_recovery(&mut self, passphrase: Option<&str>) -> String {
+        let setup = self.m().create_recovery(passphrase).await.unwrap();
+        self.run_setup(&setup, false).await.unwrap();
+        self.sync().await;
+        setup.recovery_key().unwrap().to_owned()
+    }
+
+    fn get(&self, path: &str) -> String {
+        let r = self.call("GET", path, None);
+        assert!(r.is_success(), "GET {path}: {}", r.status);
+        r.body.to_string()
+    }
+
+    /// The four GETs of a restore
+    pub fn recovery_secrets(&self) -> RecoverySecrets {
+        use stoat_crypto::proto::api::{paths, secrets};
+        let default_key = self.get(&paths::secret(secrets::DEFAULT_KEY));
+        let id = serde_json::from_str::<Value>(&default_key).unwrap()["key"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        RecoverySecrets {
+            key_description: self.get(&paths::secret(&secrets::key(&id))),
+            backup_secret: self.get(&paths::secret(secrets::MEGOLM_BACKUP_V1)),
+            backup_version: self.get(paths::BACKUP_VERSION),
+            default_key,
+        }
+    }
+
+    /// Unlock with the recovery key or passphrase, fetch and import the backup
+    pub async fn restore(&self, input: &str) -> Result<RestoreProgress, CryptoError> {
+        let version = self.m().unlock_backup(input, &self.recovery_secrets()).await?;
+        let body = self.get(&stoat_crypto::proto::api::paths::backup_keys(&version));
+        let mut restore: BackupRestore = self.m().restore_backup(&body).await?;
+        loop {
+            let p = restore.next(2).await?;
+            if p.is_finished() {
+                return Ok(p);
+            }
+        }
+    }
+
+    pub fn take_errors(&self) -> Vec<CryptoError> {
+        std::mem::take(&mut *self.errors.lock().unwrap())
+    }
 }
