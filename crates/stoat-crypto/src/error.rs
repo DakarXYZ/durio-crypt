@@ -36,6 +36,13 @@ pub enum CryptoError {
     /// The payload is not a valid payload v1
     #[error("invalid message payload")]
     InvalidPayload,
+    /// An `EncryptedFile` is not a valid v2 object
+    #[error("invalid encrypted file description")]
+    InvalidAttachment,
+    /// The downloaded blob is not the one the sender encrypted (CR-10): show
+    /// nothing of it
+    #[error("attachment hash mismatch")]
+    AttachmentHashMismatch,
     /// Unexpected library failure in an operation
     #[error("internal crypto error during {0}")]
     Internal(&'static str),
@@ -55,6 +62,8 @@ impl CryptoError {
             Self::RoomKeyNotShared => "room_key_not_shared",
             Self::PayloadTooLarge => "payload_too_large",
             Self::InvalidPayload => "invalid_payload",
+            Self::InvalidAttachment => "invalid_attachment",
+            Self::AttachmentHashMismatch => "attachment_hash_mismatch",
             Self::Internal(_) => "internal",
         }
     }

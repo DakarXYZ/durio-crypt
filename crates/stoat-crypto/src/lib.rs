@@ -57,6 +57,22 @@
 //! Report [`undelivered_devices`] in the UI (a device whose mailbox stays
 //! full misses keys).
 //!
+//! ## Attachments (CR-10)
+//!
+//! * **Upload**: per file [`AttachmentEncryptor::new`] → `update` per chunk
+//!   ([`ATTACHMENT_CHUNK`]) → upload the output to `POST
+//!   {autumn}/attachments?encrypted=true` → `{id}`; `finish()` → the
+//!   `EncryptedFile` for `Attachment::file`. A thumbnail is a separate blob
+//!   with its own encryptor ([`encrypt_attachment`] for small ones) and id
+//!   (`Attachment::thumbnail`). The send request lists
+//!   `payload.file_ids()` (files **and** thumbnails) in its open
+//!   `attachments`, else the server deletes the thumbnails after an hour.
+//! * **Download**: fetch the blob into a temporary file, hash it with
+//!   [`AttachmentVerifier`] (`new(&file)` → `update` per chunk → `finish()`);
+//!   only its `Ok` gives the [`AttachmentDecryptor`] for the second pass.
+//!   `AttachmentHashMismatch` → show nothing (the server swapped the blob).
+//!   Never stream plaintext to a decoder before `finish()` succeeded.
+//!
 //! [`set_server_limits`]: CryptoMachine::set_server_limits
 //! [`receive_reconnect`]: CryptoMachine::receive_reconnect
 //! [`receive_otk_counts`]: CryptoMachine::receive_otk_counts
@@ -74,6 +90,7 @@
 //! [`decrypt_batch`]: CryptoMachine::decrypt_batch
 //! [`undelivered_devices`]: CryptoMachine::undelivered_devices
 
+mod attachments;
 mod batch;
 mod binding;
 mod error;
@@ -87,6 +104,10 @@ mod requests;
 mod store;
 mod types;
 
+pub use attachments::{
+    ATTACHMENT_CHUNK, AttachmentDecryptor, AttachmentEncryptor, AttachmentVerifier, decrypt_attachment,
+    encrypt_attachment,
+};
 pub use batch::ServerLimits;
 pub use error::{CryptoError, DecryptError, DecryptFailureKind, Result, WithheldReason};
 pub use machine::CryptoMachine;

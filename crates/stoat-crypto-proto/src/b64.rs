@@ -31,6 +31,11 @@ pub fn encode(bytes: impl AsRef<[u8]>) -> String {
     WRITE.encode(bytes)
 }
 
+/// Encode base64url, no padding (JWK `k`)
+pub fn encode_url(bytes: impl AsRef<[u8]>) -> String {
+    READ_URL.encode(bytes)
+}
+
 /// Decode standard base64, padded or not
 pub fn decode(s: &str) -> Result<Vec<u8>, DecodeError> {
     READ.decode(s)

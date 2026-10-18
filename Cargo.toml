@@ -24,6 +24,15 @@ matrix-sdk-sqlite = { version = "=0.19.1", default-features = false, features = 
 matrix-sdk-indexeddb = { version = "=0.19.1", default-features = false, features = ["e2e-encryption"] }
 ruma = { version = "=0.17.0", features = ["client-api-c"] }
 
+# RustCrypto and rand at the versions matrix-sdk-crypto 0.19.1 already pulls in
+# (no new crates in the graph): attachments (CR-10), recovery key (CR-12)
+aes = { version = "0.9.3", default-features = false, features = ["zeroize"] }
+ctr = { version = "0.10.1", features = ["zeroize"] }
+sha2 = "0.11"
+subtle = "2.6"
+bs58 = { version = "0.5.1", default-features = false, features = ["alloc"] }
+rand_10 = { package = "rand", version = "0.10.2" }
+
 async-lock = "3"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 base64 = "0.22"
@@ -71,3 +80,13 @@ debug = "line-tables-only"
 
 [profile.dev.package."*"]
 debug = false
+
+# passphrase tests run PBKDF2-SHA512 (500 000 rounds) in debug builds
+[profile.dev.package.sha2]
+opt-level = 3
+
+[profile.dev.package.pbkdf2]
+opt-level = 3
+
+[profile.dev.package.hmac]
+opt-level = 3

@@ -163,6 +163,16 @@ impl MessagePayload {
         }
     }
 
+    /// autumn ids for the open `attachments` of the send request: every file
+    /// **and every thumbnail** (C9) — a file not listed there is never marked
+    /// used and the server deletes it after an hour
+    pub fn file_ids(&self) -> Vec<String> {
+        self.attachments
+            .iter()
+            .flat_map(|a| std::iter::once(a.id.clone()).chain(a.thumbnail.as_ref().map(|t| t.id.clone())))
+            .collect()
+    }
+
     /// Serialize with `pad` so that the JSON length is a multiple of
     /// [`PAD_BLOCK`] bytes (Q9). Fails over [`MAX_PAYLOAD_LEN`].
     pub fn to_padded_value(&self) -> Result<Value, PayloadError> {

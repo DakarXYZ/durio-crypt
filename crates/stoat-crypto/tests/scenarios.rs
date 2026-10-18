@@ -1,16 +1,19 @@
 //! Scenarios of the CR-01 spike, re-run through the `CryptoMachine` façade and
 //! the backend-faithful fake server (CR-18 scaffolding), plus the checks of
-//! CR-04…CR-07, CR-19 and CR-24. Key forwarding (S6) is in `delivery.rs`;
-//! SAS and backup (S3, S8) move here with block 3C — until then they live in
-//! `spikes/spike-msc/tests/scenarios.rs`.
+//! CR-04…CR-07, CR-10, CR-19 and CR-24. Key forwarding (S6) is in
+//! `delivery.rs`; SAS and backup (S3, S8) move here with block 3C — until
+//! then they live in `spikes/spike-msc/tests/scenarios.rs`.
 
 mod common;
 
 use common::*;
 use serde_json::json;
-use stoat_crypto::proto::EncryptedEnvelope;
 use stoat_crypto::proto::api::ToDeviceMessage;
-use stoat_crypto::{CryptoError, DecryptError, DecryptFailureKind, RequestKind, Trust, Verification, WithheldReason};
+use stoat_crypto::proto::{Attachment, EncryptedEnvelope, Thumbnail};
+use stoat_crypto::{
+    ATTACHMENT_CHUNK, AttachmentEncryptor, AttachmentVerifier, CryptoError, DecryptError, DecryptFailureKind,
+    RequestKind, Trust, Verification, WithheldReason, decrypt_attachment, encrypt_attachment,
+};
 
 /// S1/T1 + CR-24: only ciphertext reaches the server; every device of the
 /// peer reads; the sender reads its own echo without a replay mark.
@@ -638,4 +641,64 @@ async fn cr19_edit_binding() {
         assert!(shown.edit_mismatch, "{edit_of:?} {seq}");
         assert!(!shown.is_clean());
     }
+}
+
+/// CR-10/T10: a file and its thumbnail travel as separate encrypted blobs;
+/// keys and hashes ride in the payload; the reader verifies each blob before
+/// a single byte is decrypted, and a swapped blob is refused.
+#[tokio::test]
+async fn cr10_attachment_with_thumbnail() {
+    let srv = server();
+    let a = Device::login(&srv, "A", "A1").await;
+    let mut b = Device::login(&srv, "B", "B1").await;
+    let dm = channel(&srv, "F", &[&a, &b]).await;
+    let photo: Vec<u8> = (0..600_000u32).map(|i| (i % 253) as u8).collect();
+    let thumb = b"tiny jpeg".to_vec();
+
+    // sender: encrypt chunk by chunk, upload with `?encrypted=true`, get ids
+    let mut enc = AttachmentEncryptor::new();
+    let blob: Vec<u8> = photo.chunks(ATTACHMENT_CHUNK).flat_map(|c| enc.update(c)).collect();
+    let file = enc.finish();
+    let (thumb_blob, thumb_file) = encrypt_attachment(&thumb);
+    let mut payload = text("photo");
+    payload.attachments.push(Attachment {
+        id: "FILE1".into(),
+        name: "cat.jpg".into(),
+        content_type: "image/jpeg".into(),
+        size: photo.len() as u64,
+        metadata: json!({ "type": "Image", "width": 800, "height": 600 }),
+        spoiler: false,
+        file,
+        thumbnail: Some(Thumbnail {
+            id: "THUMB1".into(),
+            width: 80,
+            height: 60,
+            file: thumb_file,
+        }),
+    });
+    // the open `attachments` of the send request list the thumbnail too (C9)
+    assert_eq!(payload.file_ids(), ["FILE1", "THUMB1"]);
+    a.send(&dm, &payload).await;
+    assert!(!last(&srv, &dm).encrypted.to_string().contains("cat.jpg"));
+
+    // reader: hash pass, then decrypt pass
+    b.sync().await;
+    let got = b.decrypt(&last(&srv, &dm)).await.unwrap().payload;
+    let att = &got.attachments[0];
+    assert_eq!(att.name, "cat.jpg");
+    let mut v = AttachmentVerifier::new(&att.file).unwrap();
+    for c in blob.chunks(ATTACHMENT_CHUNK) {
+        v.update(c);
+    }
+    let mut dec = v.finish().unwrap();
+    let out: Vec<u8> = blob.chunks(ATTACHMENT_CHUNK).flat_map(|c| dec.update(c)).collect();
+    assert_eq!(out, photo);
+    let thumb_file = &att.thumbnail.as_ref().unwrap().file;
+    assert_eq!(decrypt_attachment(&thumb_blob, thumb_file).unwrap(), thumb);
+
+    // the server serves another blob under the thumbnail id
+    assert_eq!(
+        decrypt_attachment(&blob, thumb_file).unwrap_err(),
+        CryptoError::AttachmentHashMismatch
+    );
 }
