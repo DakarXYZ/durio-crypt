@@ -80,12 +80,23 @@ fn store_err<E>(op: &'static str) -> impl FnOnce(E) -> CryptoError {
 }
 
 /// Core crypto state of one account on one server
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct CryptoMachine {
     inner: Arc<Inner>,
 }
 
-#[derive(Debug)]
+/// CR-16: the account only. The state behind it holds member ids, mailbox
+/// ids, to-device ciphertext and the encrypted events waiting for keys —
+/// nothing a host log should get from a `{:?}`.
+impl std::fmt::Debug for CryptoMachine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CryptoMachine")
+            .field("user_id", &self.inner.user_ulid)
+            .field("device_id", &self.inner.device_ulid)
+            .finish_non_exhaustive()
+    }
+}
+
 struct Inner {
     machine: OlmMachine,
     user_ulid: String,

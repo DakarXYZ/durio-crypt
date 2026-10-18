@@ -68,3 +68,36 @@ async fn decrypted_message_debug_has_no_text() {
     let shown = format!("{m:?}");
     assert!(!shown.contains("private"), "{shown}");
 }
+
+/// `{:?}` of the machine (and of the FFI object wrapping it) names the
+/// account only: no member ids, mailbox ids, session ids or ciphertext of
+/// the to-device retries and key requests it keeps
+#[tokio::test]
+async fn machine_debug_names_the_account_only() {
+    let srv = server();
+    let mut a = Device::login(&srv, "A", "A1").await;
+    let mut b = Device::login(&srv, "B", "B1").await;
+    let dm = channel(&srv, "C", &[&a, &b]).await;
+    b.send(&dm, &text("for the record")).await;
+    a.sync().await;
+    // a missing key queues an encrypted event for a key request
+    b.m().invalidate_outbound_session(&dm).await.unwrap();
+    b.send(&dm, &text("later")).await;
+    let waiting = last(&srv, &dm);
+    assert!(a.decrypt(&waiting).await.is_err());
+    a.sync().await;
+    b.sync().await;
+
+    let shown = format!("{:?}", a.m());
+    assert!(shown.contains(&a.auth.device), "{shown}");
+    for leak in [
+        b.auth.user.as_str(),
+        b.auth.device.as_str(),
+        waiting.id.as_str(),
+        waiting.encrypted["session_id"].as_str().unwrap(),
+        &waiting.encrypted["ciphertext"].as_str().unwrap()[..24],
+    ] {
+        assert!(!shown.contains(leak), "{leak} in {shown}");
+    }
+    assert!(shown.len() < 200, "{shown}");
+}
