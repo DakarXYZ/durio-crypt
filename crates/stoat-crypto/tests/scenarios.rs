@@ -403,6 +403,39 @@ async fn failed_requests_are_retried() {
     assert_eq!(b.read(&last(&srv, &dm)).await, "eventually");
 }
 
+/// CR-24: own other devices get the room keys; the sender reads its own
+/// message from the server after a restart (the outbound session is also an
+/// inbound one in the store), and neither copy is a replay
+#[tokio::test]
+async fn cr24_own_devices_and_echo_after_restart() {
+    let srv = server();
+    let dir = tempfile::tempdir().unwrap();
+    let mut a1 = Device::login_sqlite(&srv, "A", "A1", dir.path()).await;
+    let mut a2 = Device::login(&srv, "A", "A2").await;
+    let mut b = Device::login(&srv, "B", "B1").await;
+    let dm = channel(&srv, "D", &[&a1, &a2, &b]).await;
+    sync_all(&mut [&mut a1, &mut a2]).await;
+
+    a1.send(&dm, &text("mine")).await;
+    let m = last(&srv, &dm);
+    sync_all(&mut [&mut a2, &mut b]).await;
+    let other = a2.decrypt(&m).await.unwrap();
+    assert_eq!(other.payload.content.as_deref(), Some("mine"));
+    assert_eq!(other.sender_device.as_deref(), Some(a1.auth.device.as_str()));
+    assert!(other.is_clean(), "{other:?}");
+    assert!(a2.received.room_keys.iter().any(|k| k.channel_id == dm));
+
+    a1.restart().await;
+    let echo = a1.decrypt(&m).await.unwrap();
+    assert_eq!(echo.payload.content.as_deref(), Some("mine"));
+    assert!(echo.is_clean(), "{echo:?}");
+    assert!(a1.decrypt(&m).await.unwrap().is_clean(), "history reload");
+    // A2 answers, A1 reads it
+    a2.send(&dm, &text("from A2")).await;
+    a1.sync().await;
+    assert_eq!(a1.read(&last(&srv, &dm)).await, "from A2");
+}
+
 /// CR-04: a crash after the keys were generated but before the upload went
 /// out loses nothing — the same keys are uploaded after the restart; the
 /// upload keeps its id while it is in flight
