@@ -9,7 +9,7 @@ use stoat_crypto::proto::api::{self, KeysCountResponse, ToDeviceFetchResponse};
 use stoat_crypto::proto::{EncryptedEnvelope, MessagePayload};
 use stoat_crypto::{
     ChannelEncryptionSettings, CryptoMachine, DecryptError, DecryptedMessage, IncomingEncryptedMessage,
-    OutgoingRequest, StoreConfig, StoreKey, ToDeviceResult,
+    OutgoingRequest, StoreConfig, StoreKey, Timing, ToDeviceResult, Trust,
 };
 use stoat_crypto_fakeserver::{Auth, FakeServer, Server, StoredMessage};
 
@@ -35,6 +35,11 @@ pub fn text(t: &str) -> MessagePayload {
     MessagePayload::text(t, "AAAAAAAAAAAAAAAAAAAAAA", 1_760_700_000_000)
 }
 
+/// Test policy (shortened delays)
+pub fn fast() -> Timing {
+    Timing::default()
+}
+
 pub struct Device {
     machine: Option<CryptoMachine>,
     pub auth: Auth,
@@ -49,11 +54,19 @@ pub struct Device {
 
 impl Device {
     pub async fn open(server: &Server, user: &str, device: &str, store: StoreConfig) -> Self {
+        let mut d = Self::open_quiet(server, user, device, store).await;
+        d.sync().await;
+        d
+    }
+
+    /// Open without the first sync (nothing uploaded yet)
+    pub async fn open_quiet(server: &Server, user: &str, device: &str, store: StoreConfig) -> Self {
         let auth = Auth::new(ulid(user), dev(device));
         let machine = CryptoMachine::open(&auth.user, &auth.device, store.clone())
             .await
             .unwrap();
-        let mut d = Self {
+        machine.set_timing(fast()).await;
+        Self {
             machine: Some(machine),
             auth,
             server: server.clone(),
@@ -61,9 +74,7 @@ impl Device {
             inbox_limit: 100,
             crash_before_ack: false,
             received: ToDeviceResult::default(),
-        };
-        d.sync().await;
-        d
+        }
     }
 
     /// In-memory store
@@ -83,11 +94,29 @@ impl Device {
     /// Close and reopen the machine from its store (crash/restart)
     pub async fn restart(&mut self) {
         drop(self.machine.take());
-        self.machine = Some(
-            CryptoMachine::open(&self.auth.user, &self.auth.device, self.store.clone())
-                .await
-                .unwrap(),
-        );
+        let machine = CryptoMachine::open(&self.auth.user, &self.auth.device, self.store.clone())
+            .await
+            .unwrap();
+        machine.set_timing(fast()).await;
+        self.machine = Some(machine);
+    }
+
+    /// Mark `other` verified on this device (what SAS ends with, 3C)
+    pub async fn trust(&self, other: &Device) {
+        self.m()
+            .set_device_trust(&other.auth.user, &other.auth.device, Trust::Verified)
+            .await
+            .unwrap();
+    }
+
+    /// Bodies of the successful requests of this device under `path_prefix`
+    pub fn sent(&self, path_prefix: &str) -> Vec<Value> {
+        let srv = self.server.lock().unwrap();
+        srv.log
+            .iter()
+            .filter(|e| e.device == self.auth.device && e.path.starts_with(path_prefix) && e.status < 300)
+            .filter_map(|e| e.request.clone())
+            .collect()
     }
 
     fn call(&self, method: &str, path: &str, body: Option<&Value>) -> stoat_crypto_fakeserver::Response {
@@ -118,17 +147,7 @@ impl Device {
 
     /// One pass over socket events, mailbox and key counts
     pub async fn receive(&mut self) -> bool {
-        let ws = self.server.lock().unwrap().ws_take(&self.auth);
-        let mut changed: Vec<String> = ws
-            .iter()
-            .filter(|e| e["type"] == "E2eeDeviceListUpdate")
-            .filter_map(|e| e["user"].as_str().map(str::to_owned))
-            .collect();
-        changed.sort();
-        changed.dedup();
-        if !changed.is_empty() {
-            self.m().receive_device_list_update(&changed).await.unwrap();
-        }
+        let changed = self.receive_ws().await;
 
         let inbox = self.call("GET", &api::paths::to_device_fetch(self.inbox_limit), None);
         let inbox: ToDeviceFetchResponse = serde_json::from_value(inbox.body).unwrap();
@@ -153,6 +172,22 @@ impl Device {
         let counts: KeysCountResponse = serde_json::from_value(counts.body).unwrap();
         self.m().receive_otk_counts(&counts).await.unwrap();
         got || !changed.is_empty()
+    }
+
+    /// Socket events only: device list updates (returns the users)
+    pub async fn receive_ws(&mut self) -> Vec<String> {
+        let ws = self.server.lock().unwrap().ws_take(&self.auth);
+        let mut changed: Vec<String> = ws
+            .iter()
+            .filter(|e| e["type"] == "E2eeDeviceListUpdate")
+            .filter_map(|e| e["user"].as_str().map(str::to_owned))
+            .collect();
+        changed.sort();
+        changed.dedup();
+        if !changed.is_empty() {
+            self.m().receive_device_list_update(&changed).await.unwrap();
+        }
+        changed
     }
 
     /// Requests and mailbox until nothing moves

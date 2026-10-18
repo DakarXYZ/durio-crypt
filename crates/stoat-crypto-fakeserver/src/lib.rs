@@ -18,6 +18,9 @@
 //!   device, a retried `(sender device, txn, recipient)` is swallowed while the
 //!   earlier copy is still in the mailbox, a full mailbox goes to `failed`;
 //! * mailbox: `GET ?limit=1..=100` (default 100), `ack` takes 1..=100 ids → 204;
+//! * limits (BE-21, BE-29): a body over `max_request_bytes` → 413 (Rocket's
+//!   JSON limit), a `PUT /to_device` with more than `max_to_device_batch`
+//!   messages (`*` counts as one) → 422 `PayloadTooLarge`;
 //! * `E2eeToDevice` goes only to the recipient device, `sender` Matrix-shaped;
 //!   `E2eeDeviceListUpdate` only on device key upload and device removal —
 //!   joining or leaving a group does **not** publish it;
@@ -43,6 +46,10 @@ pub type Server = Arc<Mutex<FakeServer>>;
 
 /// Backend default `max_pending_to_device`
 pub const MAX_PENDING_TO_DEVICE: usize = 10_000;
+/// Backend default `max_to_device_batch`
+pub const MAX_TO_DEVICE_BATCH: usize = 1_000;
+/// Backend default `max_request_bytes`
+pub const MAX_REQUEST_BYTES: usize = 4_194_304;
 
 /// Authenticated caller: the session token resolves to (user, session = device)
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -127,6 +134,8 @@ pub struct StoredMessage {
 /// One request/response pair, recorded for fixtures and assertions
 #[derive(Clone, Debug)]
 pub struct Exchange {
+    /// Calling device (session)
+    pub device: String,
     pub method: String,
     pub path: String,
     pub request: Option<Value>,
@@ -207,6 +216,8 @@ pub struct FakeServer {
     pub ws_log: Vec<Value>,
     pub record: bool,
     pub max_pending_to_device: usize,
+    pub max_to_device_batch: usize,
+    pub max_request_bytes: usize,
 }
 
 impl Default for FakeServer {
@@ -238,6 +249,8 @@ impl FakeServer {
             ws_log: Vec::new(),
             record: true,
             max_pending_to_device: MAX_PENDING_TO_DEVICE,
+            max_to_device_batch: MAX_TO_DEVICE_BATCH,
+            max_request_bytes: MAX_REQUEST_BYTES,
         }
     }
 
@@ -258,6 +271,7 @@ impl FakeServer {
         let response = self.route(auth, method, path, body);
         if self.record {
             self.log.push(Exchange {
+                device: auth.device.clone(),
                 method: method.to_owned(),
                 path: path.to_owned(),
                 request: body.cloned(),
@@ -277,6 +291,9 @@ impl FakeServer {
         {
             let (_, status) = self.faults.fail_next.remove(i);
             return error(status, "InjectedFailure");
+        }
+        if body.is_some_and(|b| b.to_string().len() > self.max_request_bytes) {
+            return error(413, "PayloadTooLarge");
         }
         let (route, query) = path.split_once('?').unwrap_or((path, ""));
         let param = |name: &str| {
@@ -539,6 +556,10 @@ impl FakeServer {
             .any(|(_, c)| !c.is_object())
         {
             return invalid("messages");
+        }
+        let count: usize = messages.values().filter_map(Value::as_object).map(Map::len).sum();
+        if count > self.max_to_device_batch {
+            return error(422, "PayloadTooLarge");
         }
 
         let visible = self.contacts(&auth.user);
@@ -908,6 +929,11 @@ impl FakeServer {
 
     pub fn device_keys(&self, user: &str, device: &str) -> Option<&Value> {
         self.devices.get(user)?.get(device)
+    }
+
+    /// The mailbox of a device as stored, oldest first (redirect tests)
+    pub fn inbox(&self, device: &str) -> Vec<ToDeviceMsg> {
+        self.inbox.get(device).cloned().unwrap_or_default()
     }
 }
 

@@ -1,14 +1,16 @@
 //! Scenarios of the CR-01 spike, re-run through the `CryptoMachine` façade and
-//! the backend-faithful fake server (CR-18 scaffolding). SAS, backup and key
-//! forwarding scenarios (S3, S6, S8) move here with blocks 3B/3C; until then
-//! they live in `spikes/spike-msc/tests/scenarios.rs`.
+//! the backend-faithful fake server (CR-18 scaffolding), plus the checks of
+//! CR-04…CR-07, CR-19 and CR-24. Key forwarding, SAS and backup (S6, S3,
+//! S8) move here with blocks 3B/3C — until then they live in
+//! `spikes/spike-msc/tests/scenarios.rs`.
 
 mod common;
 
 use common::*;
 use serde_json::json;
 use stoat_crypto::proto::EncryptedEnvelope;
-use stoat_crypto::{CryptoError, DecryptError, Trust, Verification};
+use stoat_crypto::proto::api::ToDeviceMessage;
+use stoat_crypto::{CryptoError, DecryptError, RequestKind, Trust, Verification};
 
 /// S1/T1 + CR-24: only ciphertext reaches the server; every device of the
 /// peer reads; the sender reads its own echo without a replay mark.
@@ -400,6 +402,79 @@ async fn failed_requests_are_retried() {
     a.send(&dm, &text("eventually")).await;
     b.sync().await;
     assert_eq!(b.read(&last(&srv, &dm)).await, "eventually");
+}
+
+/// CR-04: a crash after the keys were generated but before the upload went
+/// out loses nothing — the same keys are uploaded after the restart; the
+/// upload keeps its id while it is in flight
+#[tokio::test]
+async fn crash_before_key_upload_keeps_keys() {
+    let srv = server();
+    let dir = tempfile::tempdir().unwrap();
+    let mut b = Device::open_quiet(&srv, "B", "B1", sqlite(dir.path())).await;
+    let first = b.m().outgoing_requests().await.unwrap();
+    let upload = first
+        .iter()
+        .find(|r| r.kind == RequestKind::KeysUpload)
+        .unwrap()
+        .clone();
+    let again = b.m().outgoing_requests().await.unwrap();
+    assert!(
+        again.iter().any(|r| r.id == upload.id && r.body == upload.body),
+        "same id while in flight"
+    );
+    // the server answers 502: the next upload is new but carries the same keys
+    b.m().mark_request_failed(&upload.id, upload.kind, 502).await.unwrap();
+    let keys = b.m().identity_keys();
+
+    b.restart().await;
+    assert_eq!(b.m().identity_keys(), keys);
+    b.sync().await;
+    assert_eq!(srv.lock().unwrap().otk_count(&b.auth.device), 50);
+    let a = Device::login(&srv, "A", "A1").await;
+    let dm = channel(&srv, "D", &[&a, &b]).await;
+    a.send(&dm, &text("after crash")).await;
+    b.sync().await;
+    assert_eq!(b.read(&last(&srv, &dm)).await, "after crash");
+}
+
+/// CR-05: an Olm message addressed to another device does not decrypt (the
+/// recipient keys inside the plaintext bind it), and gives no room key
+#[tokio::test]
+async fn redirected_olm_message_is_rejected() {
+    let srv = server();
+    let a = Device::login(&srv, "A", "A1").await;
+    let mut b1 = Device::login(&srv, "B", "B1").await;
+    let mut b2 = Device::login(&srv, "B", "B2").await;
+    let dm = channel(&srv, "D", &[&a, &b1, &b2]).await;
+    let b2_dev = b2.auth.device.clone();
+    srv.lock().unwrap().faults.drop_filter = Some(Box::new(move |m| m.recipient_device == b2_dev));
+    a.send(&dm, &text("for B1 only")).await;
+    srv.lock().unwrap().faults.drop_filter = None;
+
+    let stolen: Vec<ToDeviceMessage> = srv
+        .lock()
+        .unwrap()
+        .inbox(&b1.auth.device)
+        .into_iter()
+        .filter(|m| m.event_type == "m.room.encrypted")
+        .map(|m| ToDeviceMessage {
+            id: format!("01KZREDIRECT{}", &m.id[12..]),
+            sender: stoat_crypto::proto::ids::user_id(&m.sender_user).unwrap(),
+            sender_device: m.sender_device,
+            event_type: m.event_type,
+            content: m.content,
+        })
+        .collect();
+    assert!(!stolen.is_empty());
+    let r = b2.m().receive_to_device(stolen).await.unwrap();
+    assert_eq!(r.undecryptable, r.processed);
+    assert!(r.room_keys.is_empty());
+    b1.sync().await;
+    b2.sync().await;
+    let m = last(&srv, &dm);
+    assert_eq!(b1.read(&m).await, "for B1 only");
+    assert_eq!(b2.decrypt(&m).await.unwrap_err(), DecryptError::MissingRoomKey);
 }
 
 /// CR-19: an edit is an in-place PATCH — it names its own message and has

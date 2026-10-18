@@ -147,6 +147,17 @@ pub(crate) fn to_device(r: &ToDeviceRequest) -> Result<OutgoingRequest> {
     ))
 }
 
+/// A to-device request built by the core itself (retries, cancellations)
+pub(crate) fn to_device_raw(id: &str, body: String) -> OutgoingRequest {
+    OutgoingRequest {
+        id: id.to_owned(),
+        kind: RequestKind::ToDevice,
+        method: "PUT",
+        path: paths::to_device_send(id),
+        body,
+    }
+}
+
 fn parse<R: IncomingResponse>(body: &str, what: &'static str) -> Result<R> {
     // an empty 200/204 body is an empty object for the response types we use
     let body = if body.trim().is_empty() { "{}" } else { body };

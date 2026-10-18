@@ -9,9 +9,13 @@
 //! 4. the library's `sender_key` is never forwarded, `device_id` is a hint;
 //! 5. one writer per account: file lock on open (CR-17) and serialized
 //!    mailbox processing / per-channel sending inside the machine.
+//!
+//! Requests are cached, cut to the server limits and retried by the outbox;
+//! replay and edit tables are `binding` (CR-19).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::panic::AssertUnwindSafe;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as SyncMutex};
 use std::time::Duration;
 
@@ -20,7 +24,6 @@ use futures_util::FutureExt;
 use matrix_sdk_common::deserialized_responses::{
     DeviceLinkProblem, ProcessedToDeviceEvent, VerificationLevel, VerificationState,
 };
-use matrix_sdk_crypto::types::requests::AnyOutgoingRequest;
 use matrix_sdk_crypto::vodozemac::megolm::{DecryptionError, MegolmMessage};
 use matrix_sdk_crypto::{
     CollectStrategy, DecryptionSettings, EncryptionSettings, EncryptionSyncChanges, EventError, LocalTrust,
@@ -36,9 +39,11 @@ use stoat_crypto_proto::api::{KeysCountResponse, ToDeviceMessage};
 use stoat_crypto_proto::envelope::{EncryptedEnvelope, MAX_CIPHERTEXT_LEN};
 use stoat_crypto_proto::payload::{EVENT_TYPE, MegolmPlaintext, MessagePayload, PayloadError};
 
+use crate::batch::ServerLimits;
 use crate::binding::{self, Seen};
 use crate::error::{CryptoError, DecryptError, Result};
 use crate::ids;
+use crate::outbox::{self, KV_RETRIES, Outbox, PartMark, Timing, UndeliveredDevice};
 use crate::requests::{self, OutgoingRequest, RequestKind, Response};
 use crate::store::{self, Opened, StoreConfig};
 use crate::types::*;
@@ -83,8 +88,10 @@ struct Inner {
     channels: Mutex<HashMap<String, ChannelState>>,
     /// per-channel send lock: `prepare_send` + `encrypt` never interleave
     send_locks: SyncMutex<HashMap<String, Arc<Mutex<()>>>>,
-    /// in-flight `keys/claim`: never two at once (each claim burns OTKs)
-    claim: Mutex<Option<OutgoingRequest>>,
+    /// cached library requests, the claim in flight, parts, retries
+    outbox: Mutex<Outbox>,
+    /// something changed since the library requests were cached
+    dirty: AtomicBool,
     /// CR-19 tables
     binding: binding::Tables,
     /// dropped last: the store must close before the lock is released
@@ -129,6 +136,14 @@ impl CryptoMachine {
             .update_tracked_users([user_id.as_ref()])
             .await
             .map_err(store_err("track self"))?;
+        let outbox = Outbox::with_retries(
+            machine
+                .store()
+                .get_value(KV_RETRIES)
+                .await
+                .map_err(store_err("read retries"))?
+                .unwrap_or_default(),
+        );
 
         Ok(Self {
             inner: Arc::new(Inner {
@@ -139,7 +154,8 @@ impl CryptoMachine {
                 sync: Mutex::new(processed),
                 channels: Mutex::new(HashMap::new()),
                 send_locks: SyncMutex::new(HashMap::new()),
-                claim: Mutex::new(None),
+                outbox: Mutex::new(outbox),
+                dirty: AtomicBool::new(true),
                 binding: binding::Tables::default(),
                 _opened_lock: StoreLockHolder {
                     #[cfg(not(target_arch = "wasm32"))]
@@ -177,64 +193,165 @@ impl CryptoMachine {
 
     // ------------------------------------------------------------- requests
 
-    /// Requests to perform now: key upload, key queries, to-device (key
-    /// requests and forwards, verification) and the Olm sessions the library
-    /// needs outside of a send (rule 2). A claim is handed out once and
-    /// repeated until it is marked sent or failed.
-    pub async fn outgoing_requests(&self) -> Result<Vec<OutgoingRequest>> {
-        let olm = self.olm();
-        let mut out = Vec::new();
-        for r in olm.outgoing_requests().await.map_err(store_err("outgoing requests"))? {
+    /// Server limits from `GET /` → `features.e2ee` (`max_to_device_batch`,
+    /// `max_request_bytes`). Until called, the backend defaults apply.
+    pub async fn set_server_limits(&self, limits: ServerLimits) {
+        self.inner.outbox.lock().await.limits = limits;
+    }
+
+    /// Delays of the core's own policies (retries of full mailboxes)
+    pub async fn set_timing(&self, timing: Timing) {
+        self.inner.outbox.lock().await.timing = timing;
+    }
+
+    /// Something the library requests depend on changed
+    fn touch(&self) {
+        self.inner.dirty.store(true, Ordering::SeqCst);
+    }
+
+    /// Refresh the cached library requests if something changed. A key query
+    /// in flight holds the refresh back (the library would forget it), unless
+    /// `force`: a send needs the member keys now.
+    async fn refresh(&self, ob: &mut Outbox, force: bool) -> Result<()> {
+        if !self.inner.dirty.load(Ordering::SeqCst) || (ob.query_in_flight() && !force) {
+            return Ok(());
+        }
+        self.inner.dirty.store(false, Ordering::SeqCst);
+        let mut fresh = Vec::new();
+        for r in self
+            .olm()
+            .outgoing_requests()
+            .await
+            .map_err(store_err("outgoing requests"))?
+        {
             if let Some(r) = requests::from_library(r.request_id(), r.request())? {
-                out.push(r);
+                fresh.push(r);
             }
         }
-        let mut claim = self.inner.claim.lock().await;
-        match claim.as_ref() {
-            Some(pending) => out.push(pending.clone()),
-            None => {
-                if let Some((id, req)) = olm
-                    .get_missing_sessions(std::iter::empty())
-                    .await
-                    .map_err(store_err("missing sessions"))?
-                {
-                    let r = requests::keys_claim(&id, &req)?;
-                    *claim = Some(r.clone());
+        ob.refreshed(fresh);
+        Ok(())
+    }
+
+    /// Requests to perform now: key upload, key queries, to-device (key
+    /// requests and forwards, verification, retries) and the Olm sessions the
+    /// library needs outside of a send (rule 2).
+    ///
+    /// A request keeps its id until it is marked: calling again before that
+    /// returns it again (the host runs each id once, see the crate docs).
+    pub async fn outgoing_requests(&self) -> Result<Vec<OutgoingRequest>> {
+        let olm = self.olm();
+        let mut ob = self.inner.outbox.lock().await;
+        self.refresh(&mut ob, false).await?;
+        let mut library = ob.cached.clone();
+        if ob.claim.is_none()
+            && let Some((id, req)) = olm
+                .get_missing_sessions(std::iter::empty())
+                .await
+                .map_err(store_err("missing sessions"))?
+        {
+            ob.claim = Some(requests::keys_claim(&id, &req)?);
+        }
+        library.extend(ob.claim.clone());
+
+        let mut out: Vec<OutgoingRequest> = Vec::new();
+        for r in library {
+            for r in ob.expand(r) {
+                if !out.iter().any(|o| o.id == r.id) {
                     out.push(r);
                 }
             }
         }
+        out.extend(ob.own_and_due());
         Ok(out)
     }
 
-    /// Report a successful response (`body` = response JSON)
+    /// Report a successful response (`body` = response JSON; may be empty
+    /// for 204)
     pub async fn mark_request_sent(&self, id: &str, kind: RequestKind, body: &str) -> Result<()> {
         let response = Response::parse(kind, body)?;
-        response.mark_sent(self.olm(), id).await?;
-        if kind == RequestKind::KeysClaim {
-            self.release_claim(id).await;
+        self.touch();
+        let mut ob = self.inner.outbox.lock().await;
+        if kind == RequestKind::ToDevice {
+            // full mailboxes (`failed`) are retried with the same content
+            let retry = ob.is_retry(id);
+            if ob.delivered(id, body) {
+                self.save_retries(&ob).await?;
+            }
+            if retry {
+                return Ok(());
+            }
+            if ob.is_own(id) {
+                ob.own_done(id);
+                return Ok(());
+            }
         }
+        match ob.part_sent(id, body) {
+            PartMark::NotAPart => response.mark_sent(self.olm(), id).await?,
+            PartMark::Pending => return Ok(()),
+            PartMark::Finished { parent, body } => {
+                Response::parse(kind, &body)?.mark_sent(self.olm(), &parent).await?;
+                ob.forget(&parent);
+            }
+        }
+        ob.forget(id);
         Ok(())
     }
 
-    /// Report an HTTP failure. Requests are regenerated or kept pending by the
-    /// library, so this mostly frees the claim slot; a 409 on our own key
-    /// upload means the server has other keys for this device.
+    /// Report an HTTP failure. The request (or the part of it) comes back
+    /// from `outgoing_requests` / `prepare_send`; a 409 on our own key upload
+    /// means the server has other keys for this device.
     pub async fn mark_request_failed(&self, id: &str, kind: RequestKind, status: u16) -> Result<()> {
-        if kind == RequestKind::KeysClaim {
-            self.release_claim(id).await;
+        self.touch();
+        let mut ob = self.inner.outbox.lock().await;
+        if ob.is_retry(id) {
+            ob.retry_failed(id);
+            return Ok(());
         }
+        if ob.is_own(id) || ob.is_part(id) {
+            return Ok(());
+        }
+        ob.forget(id);
         if kind == RequestKind::KeysUpload && status == 409 {
             return Err(CryptoError::DeviceKeysConflict);
         }
         Ok(())
     }
 
-    async fn release_claim(&self, id: &str) {
-        let mut claim = self.inner.claim.lock().await;
-        if claim.as_ref().is_some_and(|c| c.id == id) {
-            *claim = None;
-        }
+    async fn save_retries(&self, ob: &Outbox) -> Result<()> {
+        self.olm()
+            .store()
+            .set_value(KV_RETRIES, &ob.retries)
+            .await
+            .map_err(store_err("save retries"))
+    }
+
+    /// Milliseconds until the core has something to send without any other
+    /// event (a retry): call `outgoing_requests` then. `None`: nothing
+    /// scheduled.
+    pub async fn wakeup_in_ms(&self) -> Option<u64> {
+        let next = self.inner.outbox.lock().await.next_retry_ms()?;
+        Some(next.saturating_sub(outbox::now_ms()))
+    }
+
+    /// Devices that did not get a to-device message because their mailbox
+    /// was full: being retried, or given up on (UI: "device X does not
+    /// receive keys")
+    pub async fn undelivered_devices(&self) -> Vec<UndeliveredDevice> {
+        self.inner
+            .outbox
+            .lock()
+            .await
+            .undelivered()
+            .into_iter()
+            .filter_map(|(user, device, attempts, gave_up)| {
+                Some(UndeliveredDevice {
+                    user_id: stoat_crypto_proto::ids::user_ulid(&user)?,
+                    device_id: device,
+                    attempts,
+                    gave_up,
+                })
+            })
+            .collect()
     }
 
     // ---------------------------------------------------------------- inbox
@@ -307,6 +424,7 @@ impl CryptoMachine {
                 })
             }));
         }
+        self.touch();
         Ok(result)
     }
 
@@ -329,16 +447,21 @@ impl CryptoMachine {
         lists.changed = users.iter().map(|u| ids::user_id(u)).collect::<Result<_>>()?;
         let processed = self.inner.sync.lock().await;
         self.sync_changes(&processed, vec![], &lists, None).await?;
+        self.touch();
         Ok(())
     }
 
     /// Socket reconnected: device lists may have changed unseen — every
-    /// tracked user is queried again in one batch (Q10)
+    /// tracked user is queried again in one batch (Q10). Key queries handed
+    /// out before are not waited for any more.
     pub async fn receive_reconnect(&self) -> Result<()> {
         self.olm()
             .mark_all_tracked_users_as_dirty()
             .await
-            .map_err(store_err("mark tracked users dirty"))
+            .map_err(store_err("mark tracked users dirty"))?;
+        self.inner.outbox.lock().await.refreshed_ms = 0;
+        self.touch();
+        Ok(())
     }
 
     /// `GET /e2ee/keys/count` (or `E2eeKeysLow`): replenish OTKs, create a
@@ -357,6 +480,7 @@ impl CryptoMachine {
         let processed = self.inner.sync.lock().await;
         self.sync_changes(&processed, vec![], &DeviceLists::new(), Some((&otk, &fallback)))
             .await?;
+        self.touch();
         Ok(())
     }
 
@@ -407,6 +531,7 @@ impl CryptoMachine {
                 .map_err(store_err("discard room key"))?;
         }
         self.inner.channels.lock().await.insert(key, state);
+        self.touch();
         Ok(())
     }
 
@@ -456,23 +581,24 @@ impl CryptoMachine {
         Ok((room, users, settings))
     }
 
-    /// Key queries in flight or due for any of `users`
-    async fn pending_key_queries(&self, users: &[OwnedUserId]) -> Result<Vec<OutgoingRequest>> {
-        let mut queries = Vec::new();
-        for r in self
-            .olm()
-            .outgoing_requests()
-            .await
-            .map_err(store_err("outgoing requests"))?
-        {
-            if let AnyOutgoingRequest::KeysQuery(q) = r.request()
-                && q.device_keys.keys().any(|u| users.contains(u))
-                && let Some(r) = requests::from_library(r.request_id(), r.request())?
-            {
-                queries.push(r);
-            }
-        }
-        Ok(queries)
+    /// Key queries due or in flight for any of `users`, refreshed first: a
+    /// send must not go to a stale device list
+    async fn member_queries(&self, ob: &mut Outbox, users: &[OwnedUserId]) -> Result<Vec<OutgoingRequest>> {
+        self.refresh(ob, true).await?;
+        let wanted: Vec<&str> = users.iter().map(|u| u.as_str()).collect();
+        Ok(ob
+            .cached
+            .iter()
+            .filter(|r| r.kind == RequestKind::KeysQuery)
+            .filter(|r| {
+                serde_json::from_str::<Value>(&r.body).is_ok_and(|b| {
+                    b["device_keys"]
+                        .as_object()
+                        .is_some_and(|m| m.keys().any(|u| wanted.contains(&u.as_str())))
+                })
+            })
+            .cloned()
+            .collect())
     }
 
     /// Steps before sending to `channel`. Returns the next requests to run:
@@ -484,28 +610,25 @@ impl CryptoMachine {
         let _guard = lock.lock().await;
         let (room, users, settings) = self.channel(channel).await?;
         let olm = self.olm();
+        let mut ob = self.inner.outbox.lock().await;
 
         // 1. members whose devices are not known yet (blocking query, CR-07)
-        let queries = self.pending_key_queries(&users).await?;
+        let queries = self.member_queries(&mut ob, &users).await?;
         if !queries.is_empty() {
-            return Ok(queries);
+            return Ok(queries.into_iter().flat_map(|q| ob.expand(q)).collect());
         }
 
         // 2. Olm sessions to every member device (one claim in flight)
-        {
-            let mut claim = self.inner.claim.lock().await;
-            if let Some(pending) = claim.as_ref() {
-                return Ok(vec![pending.clone()]);
-            }
-            if let Some((id, req)) = olm
+        if ob.claim.is_none()
+            && let Some((id, req)) = olm
                 .get_missing_sessions(users.iter().map(|u| u.as_ref()))
                 .await
                 .map_err(store_err("missing sessions"))?
-            {
-                let r = requests::keys_claim(&id, &req)?;
-                *claim = Some(r.clone());
-                return Ok(vec![r]);
-            }
+        {
+            ob.claim = Some(requests::keys_claim(&id, &req)?);
+        }
+        if let Some(claim) = ob.claim.clone() {
+            return Ok(ob.expand(claim));
         }
 
         // 3. room key to every device that does not have it (rotation if needed)
@@ -513,7 +636,11 @@ impl CryptoMachine {
             .share_room_key(&room, users.iter().map(|u| u.as_ref()), settings)
             .await
             .map_err(store_err("share room key"))?;
-        shares.iter().map(|r| requests::to_device(r)).collect()
+        let mut out = Vec::new();
+        for r in shares {
+            out.extend(ob.expand(requests::to_device(&r)?));
+        }
+        Ok(out)
     }
 
     /// Encrypt a payload v1 for `channel` into envelope v1. The room key must
@@ -532,7 +659,11 @@ impl CryptoMachine {
         let (room, users, settings) = self.channel(channel).await?;
         let olm = self.olm();
         // member devices unknown: sharing now would silently skip them
-        if !self.pending_key_queries(&users).await?.is_empty() {
+        let queries = {
+            let mut ob = self.inner.outbox.lock().await;
+            self.member_queries(&mut ob, &users).await?
+        };
+        if !queries.is_empty() {
             return Err(CryptoError::RoomKeyNotShared);
         }
         // nothing pending means: session exists, is shared and not expired —
