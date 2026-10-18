@@ -5,6 +5,7 @@
 //! stack); the `try_*` ones return it, after marking the request failed with
 //! status 0 as a client does (chaos scenarios).
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -14,7 +15,7 @@ use stoat_crypto::proto::api::{self, KeysCountResponse, ToDeviceFetchResponse, T
 use stoat_crypto::proto::{EncryptedEnvelope, MessagePayload, b64};
 use stoat_crypto::{
     ChannelEncryptionSettings, CryptoError, CryptoMachine, DecryptError, DecryptedMessage, IncomingEncryptedMessage,
-    OutgoingRequest, StoreConfig, StoreKey, Timing, ToDeviceResult,
+    OutgoingRequest, RequestKind, StoreConfig, StoreKey, Timing, ToDeviceResult,
 };
 
 use crate::account::Account;
@@ -109,6 +110,10 @@ pub struct Device {
     pub message_events: Vec<Value>,
     /// Stop fetching the mailbox (a device that is offline)
     pub offline: bool,
+    /// To-device messages this device sent, per event type (successful requests)
+    pub sent_to_device: BTreeMap<String, usize>,
+    /// Mailbox messages handed to the machine, per event type
+    pub received_types: BTreeMap<String, usize>,
 }
 
 impl Device {
@@ -145,6 +150,8 @@ impl Device {
             errors: Vec::new(),
             message_events: Vec::new(),
             offline: false,
+            sent_to_device: BTreeMap::new(),
+            received_types: BTreeMap::new(),
         };
         // contract 2: after Ready, always the mailbox and the key counts
         d.machine.receive_reconnect().await.unwrap_or_else(|e| panic!("{e}"));
@@ -187,6 +194,14 @@ impl Device {
             }
         };
         if reply.ok() {
+            if r.kind == RequestKind::ToDevice {
+                let body: Value = serde_json::from_str(&r.body).unwrap_or(Value::Null);
+                let n = body["messages"]
+                    .as_object()
+                    .map_or(0, |u| u.values().filter_map(Value::as_object).map(|d| d.len()).sum());
+                let t = body["type"].as_str().unwrap_or("?").to_owned();
+                *self.sent_to_device.entry(t).or_default() += n;
+            }
             self.machine
                 .mark_request_sent(&r.id, r.kind, &reply.body)
                 .await
@@ -255,6 +270,9 @@ impl Device {
     /// Hand a page to the machine (in the given order) and, if `ack`,
     /// acknowledge what it committed
     pub async fn process(&mut self, page: Vec<ToDeviceMessage>, ack: bool) -> Result<ToDeviceResult, HttpError> {
+        for m in &page {
+            *self.received_types.entry(m.event_type.clone()).or_default() += 1;
+        }
         let r = self
             .machine
             .receive_to_device(page)
