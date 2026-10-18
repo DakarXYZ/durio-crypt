@@ -1,0 +1,5 @@
+/node_modules
+/dist
+/build
+# wasm-bindgen output (scripts/build-wasm.sh), copied to dist/wasm
+/src/wasm

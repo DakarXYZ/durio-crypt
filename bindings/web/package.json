@@ -1,0 +1,39 @@
+{
+  "name": "@durio/stoat-crypto",
+  "version": "0.2.0",
+  "description": "dur.io crypto core (E2EE of direct messages and groups) as wasm in a Web Worker, for for-web inside the Windows client",
+  "license": "Apache-2.0",
+  "author": "DakarX",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DakarXYZ/durio-crypt.git",
+    "directory": "bindings/web"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./worker": {
+      "types": "./dist/worker.d.ts",
+      "default": "./dist/worker.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist/",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --test test/*.test.mjs"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
+}
