@@ -1199,7 +1199,10 @@ impl CryptoMachine {
             .collect())
     }
 
-    /// Set the local trust of a device (after SAS, or to block it)
+    /// Set the local trust of a device. Hosts call it with `Unverified`
+    /// (reset) or `Blocked` only: `Verified` comes from a SAS flow reaching
+    /// `Done`, which sets it by itself. `Verified` here is for tests; a UI
+    /// that sets it skips the comparison the shield stands for (review O-3).
     pub async fn set_device_trust(&self, user: &str, device: &str, trust: Trust) -> Result<()> {
         let user_id = ids::user_id(user)?;
         let device_id = ids::device_id(device)?;

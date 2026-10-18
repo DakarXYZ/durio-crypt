@@ -70,6 +70,12 @@
 //!   decimals }` → the user compares → `confirm()` or `mismatch()` →
 //!   `Confirmed` → `Done` (the device is now `Trust::Verified`). `Cancelled
 //!   { reason }` ends the flow (`Mismatch`: warn, possible attack).
+//! * **Trust is set by SAS only.** `Done` already marks the device
+//!   verified; the host never calls [`set_device_trust`] with
+//!   `Trust::Verified` itself — not on a button, not "trust on first use".
+//!   `Verified` is what the shield and key requests (CR-08) rely on; the
+//!   call exists for tests and for `Unverified` (reset) and `Blocked`, which
+//!   the UI may offer (review O-3; Android enforces it in `:core:crypto`).
 //! * **Timeouts**: while a flow is open [`wakeup_in_ms`] is at most 10 s;
 //!   the pass it triggers cancels expired flows (`Timeout`). Emoji: index
 //!   into [`SAS_EMOJI`], description = translation key.
@@ -167,6 +173,7 @@
 //! [`unlock_backup`]: CryptoMachine::unlock_backup
 //! [`restore_backup`]: CryptoMachine::restore_backup
 //! [`backup_status`]: CryptoMachine::backup_status
+//! [`set_device_trust`]: CryptoMachine::set_device_trust
 //! [`export_room_keys`]: CryptoMachine::export_room_keys
 //! [`import_room_keys`]: CryptoMachine::import_room_keys
 //! [`debug_report`]: CryptoMachine::debug_report

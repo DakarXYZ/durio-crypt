@@ -230,6 +230,9 @@ impl CryptoMachine {
         run(async move { Ok(m.devices(&user_id).await?.into_iter().map(Into::into).collect()) }).await
     }
 
+    /// `UNVERIFIED` (reset) or `BLOCKED` only. Never `VERIFIED` from the
+    /// app: a SAS flow reaching `Done` sets it (review O-3, enforced in
+    /// `:core:crypto`)
     pub async fn set_device_trust(&self, user_id: String, device_id: String, trust: Trust) -> Result<(), CryptoError> {
         let m = self.core();
         run(async move { Ok(m.set_device_trust(&user_id, &device_id, trust.into()).await?) }).await
