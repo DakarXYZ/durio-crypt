@@ -173,11 +173,22 @@ run_test() {
 
 run_load() {
     mkdir -p out/testkit
+    since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    rc=0
     DCARGO_DOCKER_ARGS="$(stack_env) -e STOAT_LOAD=1 -e STOAT_LOAD_USERS=${STOAT_LOAD_USERS:-50}" \
-        scripts/dcargo.sh sh -c "$(nextest_cmd 'test(/^load_/)' testkit-serial)"
+        scripts/dcargo.sh sh -c "$(nextest_cmd 'test(/^load_/)' testkit-serial)" || rc=$?
+    server_errors "$since" load
+    return $rc
+}
+
+# ERROR/panic lines of the services since $1 → out/testkit/<$2>-server-errors.log
+server_errors() {
+    log=out/testkit/$2-server-errors.log
     for s in $SERVICES; do
-        printf '%s: %s ERROR/panic lines in the log\n' "$s" \
-            "$(docker logs durio-test-$s 2>&1 | grep -ciE ' ERROR |panicked' || true)"
+        docker logs --since "$1" durio-test-$s 2>&1 | grep -E ' ERROR |panicked' | sed "s/^/$s: /" || true
+    done > "$log"
+    for s in $SERVICES; do
+        printf '%s: %s ERROR/panic lines (%s)\n' "$s" "$(grep -c "^$s: " "$log" || true)" "$log"
     done
 }
 
@@ -186,11 +197,14 @@ run_load() {
 # redis, rabbit (infra), delta, bonfire, autumn, pushd (services).
 run_chaos() {
     dir=out/testkit/chaos
+    since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     rm -rf "$dir" && mkdir -p "$dir"
     name=durio-testkit-chaos
     docker rm -f $name >/dev/null 2>&1 || true
     DCARGO_DOCKER_ARGS="-d --name $name $(stack_env) -e STOAT_CHAOS_DIR=/work/$dir" \
-        scripts/dcargo.sh sh -c "$(nextest_cmd 'test(/^chaos_/)' testkit-serial)" >/dev/null
+        scripts/dcargo.sh sh -c "$(nextest_cmd "${CHAOS_FILTER:-test(/^chaos_/)}" testkit-serial)" >/dev/null
+    docker wait $name > "$dir/exit-code" 2>/dev/null &  # --rm: the container is gone after it exits
+    waiter=$!
     docker logs -f $name &
     logs=$!
     while running $name; do
@@ -209,11 +223,17 @@ run_chaos() {
         done
         sleep 0.3
     done
-    rc=$(docker wait $name 2>/dev/null || echo 1)
+    wait $waiter 2>/dev/null || true
+    rc=$(cat "$dir/exit-code" 2>/dev/null || true)
+    rc=${rc:-1}
     wait $logs 2>/dev/null || true
     docker rm -f $name >/dev/null 2>&1 || true
-    # leave the stack as the scenarios found it
-    for s in redis rabbit $SERVICES; do running durio-test-$s || docker start durio-test-$s >/dev/null; done
+    # leave the stack as the scenarios found it; the services lose their
+    # RabbitMQ connection for good when the broker restarts: restart them
+    for s in redis rabbit; do running durio-test-$s || docker start durio-test-$s >/dev/null; done
+    for s in $SERVICES; do docker restart durio-test-$s >/dev/null 2>&1 || docker start durio-test-$s >/dev/null; done
+    wait_delta durio-test-delta
+    server_errors "$since" chaos
     return "$rc"
 }
 
