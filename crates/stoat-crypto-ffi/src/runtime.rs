@@ -52,6 +52,24 @@ where
     }
 }
 
+/// [`run`] for operations dominated by PBKDF2 (review O-1): key file export
+/// and import, passphrase recovery. 500 000 rounds of SHA-512 take up to
+/// ~1.5 s on a phone; on the blocking pool they do not hold one of the two
+/// workers that every other call (a push decrypt, a mailbox pass) needs.
+pub(crate) async fn run_blocking<T, F>(fut: F) -> Result<T, CryptoError>
+where
+    F: Future<Output = Result<T, CryptoError>> + Send + 'static,
+    T: Send + 'static,
+{
+    let rt = runtime()?;
+    let handle = rt.handle().clone();
+    // a blocking-pool thread is not inside an async context: `block_on` is fine
+    match rt.spawn_blocking(move || handle.block_on(fut)).await {
+        Ok(result) => result,
+        Err(_) => Err(CryptoError::panic()),
+    }
+}
+
 /// [`run`] for operations whose failures are values (decryption)
 pub(crate) async fn run_value<T, F>(fut: F) -> Result<T, CryptoError>
 where
@@ -118,6 +136,37 @@ mod tests {
     fn panics_become_typed_errors() {
         assert!(matches!(guard(boom), Err(CryptoError::Panic(_))));
         assert_eq!(guard(|| Ok(1)).unwrap(), 1);
+    }
+
+    /// O-1: slow PBKDF2-like work on the blocking pool leaves both workers
+    /// free for the other calls
+    #[tokio::test(flavor = "multi_thread")]
+    async fn blocking_work_leaves_the_workers_free() {
+        use std::time::{Duration, Instant};
+        let slow: Vec<_> = (0..4)
+            .map(|_| {
+                tokio::spawn(run_blocking(async {
+                    std::thread::sleep(Duration::from_millis(1500));
+                    Ok(())
+                }))
+            })
+            .collect();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let started = Instant::now();
+        assert_eq!(run(async { Ok(3) }).await.unwrap(), 3);
+        assert!(
+            started.elapsed() < Duration::from_millis(700),
+            "{:?}",
+            started.elapsed()
+        );
+        for s in slow {
+            s.await.unwrap().unwrap();
+        }
+        // a panic there is still a typed error
+        assert!(matches!(
+            run_blocking(async { boom() }).await,
+            Err(CryptoError::Panic(_))
+        ));
     }
 
     #[tokio::test]

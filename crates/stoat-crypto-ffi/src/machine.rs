@@ -9,7 +9,7 @@ use stoat_crypto::proto::api::{KeysCountResponse, ToDeviceFetchResponse};
 
 use crate::backup::BackupRestore;
 use crate::error::CryptoError;
-use crate::runtime::{InRuntime, guard, run, run_value};
+use crate::runtime::{InRuntime, guard, run, run_blocking, run_value};
 use crate::sas::SasHandle;
 use crate::types::{
     BackupStatus, ChannelEncryptionSettings, DecryptResult, DeviceInfo, IdentityKeys, IncomingEncryptedMessage,
@@ -274,7 +274,8 @@ impl CryptoMachine {
     pub async fn create_recovery(&self, passphrase: Option<Vec<u8>>) -> Result<RecoverySetup, CryptoError> {
         let passphrase = passphrase.map(secret_string).transpose()?;
         let m = self.core();
-        run(async move {
+        // a passphrase means PBKDF2 (O-1)
+        run_blocking(async move {
             Ok(m.create_recovery(passphrase.as_deref().map(String::as_str))
                 .await?
                 .into())
@@ -293,7 +294,7 @@ impl CryptoMachine {
     pub async fn unlock_backup(&self, input: Vec<u8>, secrets: RecoverySecrets) -> Result<String, CryptoError> {
         let input = secret_string(input)?;
         let m = self.core();
-        run(async move { Ok(m.unlock_backup(&input, &secrets.into()).await?) }).await
+        run_blocking(async move { Ok(m.unlock_backup(&input, &secrets.into()).await?) }).await
     }
 
     /// `GET /e2ee/backup/keys?version=<v>` body → a restore in batches
@@ -324,7 +325,7 @@ impl CryptoMachine {
     ) -> Result<KeyExport, CryptoError> {
         let passphrase = secret_string(passphrase)?;
         let m = self.core();
-        run(async move { Ok(m.export_room_keys(&passphrase, &channel_ids).await?.into()) }).await
+        run_blocking(async move { Ok(m.export_room_keys(&passphrase, &channel_ids).await?.into()) }).await
     }
 
     /// Diagnostic report (JSON, CR-22): counts, states and error codes, no
@@ -339,7 +340,7 @@ impl CryptoMachine {
     pub async fn import_room_keys(&self, file: String, passphrase: Vec<u8>) -> Result<KeyImportResult, CryptoError> {
         let passphrase = secret_string(passphrase)?;
         let m = self.core();
-        run(async move { Ok(m.import_room_keys(&file, &passphrase).await?.into()) }).await
+        run_blocking(async move { Ok(m.import_room_keys(&file, &passphrase).await?.into()) }).await
     }
 }
 

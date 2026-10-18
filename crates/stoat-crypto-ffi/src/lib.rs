@@ -9,6 +9,9 @@
 //!   runtime of the process ([`runtime`]); a panic becomes
 //!   `CryptoException.Panic`, never a crash; a cancelled coroutine leaves the
 //!   operation to finish;
+//! * PBKDF2-heavy calls (`export_room_keys`, `import_room_keys`,
+//!   `unlock_backup`, `create_recovery` with a passphrase) run on the
+//!   runtime's blocking pool, so the two workers stay free (review O-1);
 //! * errors → `CryptoException.<Code>` with a fixed message; a failed
 //!   decryption is a value (`DecryptResult.Failed`), not an exception;
 //! * request and response bodies, payload, envelope and `EncryptedFile` are
