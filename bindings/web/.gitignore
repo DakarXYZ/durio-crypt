@@ -3,3 +3,5 @@
 /build
 # wasm-bindgen output (scripts/build-wasm.sh), copied to dist/wasm
 /src/wasm
+/LICENSE
+/NOTICE

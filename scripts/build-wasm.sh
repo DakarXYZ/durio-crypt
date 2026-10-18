@@ -95,6 +95,7 @@ build() {
     (cd dist/wasm && sha256sum stoat_crypto_wasm_bg.wasm >stoat_crypto_wasm_bg.wasm.sha256)
     test "$(node -p 'require("./package.json").version')" = "$VERSION" ||
         { echo "bindings/web/package.json version != $VERSION" >&2; exit 1; }
+    cp "$ROOT/LICENSE" "$ROOT/NOTICE" .
     mkdir -p build
     npm pack --silent --pack-destination build >/dev/null
     local tgz=durio-stoat-crypto-$VERSION.tgz
@@ -117,10 +118,11 @@ analyze() {
     CARGO_PROFILE_RELEASE_WASM_STRIP=none CARGO_TARGET_DIR=target/wasm-names \
         cargo build --locked --target $TARGET --profile $PROFILE -p stoat-crypto-wasm
     local out=target/wasm-names/bindgen
-    wasm-bindgen --target web --keep-debug --out-dir $out target/wasm-names/$TARGET/$PROFILE/stoat_crypto_wasm.wasm
-    wasm-opt -Oz --debuginfo "${WASM_OPT_FEATURES[@]}" -o $out/opt.wasm $out/stoat_crypto_wasm_bg.wasm
-    twiggy top -n 30 $out/opt.wasm
-    twiggy garbage $out/opt.wasm | head -5 || true
+    wasm-bindgen --target web --out-dir $out target/wasm-names/$TARGET/$PROFILE/stoat_crypto_wasm.wasm
+    # before wasm-opt: twiggy 0.7 panics on the wasm-opt output ("same key into multiple
+    # items"); wasm-opt takes ~5 % off evenly, the ranking stays
+    twiggy top -n 30 $out/stoat_crypto_wasm_bg.wasm
+    twiggy dominators -d 2 -r 25 $out/stoat_crypto_wasm_bg.wasm
 }
 
 case ${1:-} in
