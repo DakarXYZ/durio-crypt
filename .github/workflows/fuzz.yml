@@ -1,0 +1,26 @@
+# Nightly fuzzing of the parsers (CR-16). Separate workspace in fuzz/ (nightly toolchain).
+name: Fuzz
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [envelope, payload, api]
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install nightly --profile minimal
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - run: cargo +nightly fuzz run ${{ matrix.target }} -- -max_total_time=600
+        working-directory: fuzz

@@ -1,0 +1,50 @@
+# cargo-deny (CR-02, CR-16): licenses, advisories, sources.
+# Run: scripts/dcargo.sh cargo deny check   (or the `deny` CI job)
+
+[graph]
+# what we ship: Linux (tests), Android ABIs, wasm (for-web inside the Windows client)
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-linux-android",
+    "armv7-linux-androideabi",
+    "x86_64-linux-android",
+    "wasm32-unknown-unknown",
+]
+# the CR-01 spikes are evidence, not product
+exclude = ["spike-msc", "spike-vodozemac"]
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = []
+
+[licenses]
+version = 2
+# Permissive only; copyleft is not allowed in the core (Apache-2.0, O4).
+# MPL-2.0 is file-level copyleft and is accepted for uniffi (CR-13).
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "MPL-2.0",
+    "Zlib",
+    "CC0-1.0",
+]
+confidence-threshold = 0.9
+
+[licenses.private]
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

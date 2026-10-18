@@ -1,18 +1,63 @@
 [workspace]
 resolver = "3"
-members = ["crates/spike-msc", "crates/spike-vodozemac"]
+members = ["crates/*", "spikes/*"]
+# `cargo build/test/clippy` without `--workspace` covers the product crates only;
+# the CR-01 spikes stay buildable as evidence (`cargo test -p spike-msc`).
+default-members = ["crates/*"]
 
 [workspace.package]
-version = "0.0.0"
+version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
 rust-version = "1.96"
+authors = ["DakarX"]
 publish = false
+
+[workspace.dependencies]
+stoat-crypto-proto = { path = "crates/stoat-crypto-proto" }
+stoat-crypto-fakeserver = { path = "crates/stoat-crypto-fakeserver" }
+
+# Exact pins (ADR 0001): update once a quarter in a separate PR.
+matrix-sdk-crypto = { version = "=0.19.1", default-features = false, features = ["automatic-room-key-forwarding"] }
+matrix-sdk-common = { version = "=0.19.1" }
+matrix-sdk-sqlite = { version = "=0.19.1", default-features = false, features = ["crypto-store", "bundled"] }
+matrix-sdk-indexeddb = { version = "=0.19.1", default-features = false, features = ["e2e-encryption"] }
+ruma = { version = "=0.17.0", features = ["client-api-c"] }
+
+async-lock = "3"
+base64 = "0.22"
+http = "1"
+rand = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+zeroize = { version = "1", features = ["zeroize_derive"] }
+
+# dev
+proptest = { version = "1", default-features = false, features = ["std"] }
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
 
 [profile.release]
 lto = "fat"
 codegen-units = 1
 strip = "symbols"
+# Android: UniFFI turns a panic into a Kotlin exception; `abort` would kill the app (CR-02)
+panic = "unwind"
+
+[profile.release-wasm]
+inherits = "release"
+opt-level = "z"
+panic = "abort"
 
 [profile.release-size]
 inherits = "release"

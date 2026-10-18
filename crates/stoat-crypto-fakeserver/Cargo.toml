@@ -1,0 +1,19 @@
+[package]
+name = "stoat-crypto-fakeserver"
+description = "In-memory fake of the dur.io /e2ee/* API (contract v1) for unit, scenario and property tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+# JSON in, JSON out: the fake never sees library (ruma) types, so whatever a
+# client sends here is exactly what the real backend has to accept.
+[dependencies]
+stoat-crypto-proto.workspace = true
+rand.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

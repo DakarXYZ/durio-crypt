@@ -3,7 +3,7 @@
 - Статус: **принято** (по итогам спайка CR-01), 2026-10-17
 - Контекст плана: `docs/plan/20-crypto-core.md` (CR-01), `00-architecture.md` (R2, R5, §3, §4), `95-review.md`
   (C1, C2, C7, C8, C15, Q1, Q6), решение владельца O4.
-- Доказательства: `docs/spike-report.md`, тесты `crates/spike-msc/tests/*`, фикстуры `fixtures/`.
+- Доказательства: `docs/spike-report.md`, тесты `spikes/spike-msc/tests/*`, фикстуры `fixtures/`.
 
 ## Решение
 

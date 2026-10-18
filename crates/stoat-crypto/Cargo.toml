@@ -1,0 +1,12 @@
+[package]
+name = "stoat-crypto"
+description = "dur.io crypto core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

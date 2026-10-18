@@ -6,8 +6,8 @@
 
 | Путь | Что |
 | --- | --- |
-| `crates/spike-msc` | прототип адаптера над `OlmMachine` (`client.rs`, прообраз CR-20 + CR-19), fakeserver (`fakeserver.rs`, прообраз CR-18), C15 (`ids.rs`), конверт/payload v1 (`payload.rs`); тесты `tests/scenarios.rs` (S1–S12), `tests/migration.rs` (0.16 → 0.19), `tests/fixtures.rs` (контракт v1) |
-| `crates/spike-vodozemac` | мини-слой на vodozemac 0.11.1 только для S1 и S4, тот же fakeserver |
+| `spikes/spike-msc` | прототип адаптера над `OlmMachine` (`client.rs`, прообраз CR-20 + CR-19), fakeserver (`fakeserver.rs`, прообраз CR-18), C15 (`ids.rs`), конверт/payload v1 (`payload.rs`); тесты `tests/scenarios.rs` (S1–S12), `tests/migration.rs` (0.16 → 0.19), `tests/fixtures.rs` (контракт v1) |
+| `spikes/spike-vodozemac` | мини-слой на vodozemac 0.11.1 только для S1 и S4, тот же fakeserver |
 | `tools/store-016` | отдельный workspace: снимок хранилища matrix-sdk-sqlite 0.16 |
 | `tools/size-probe` | обёртка для замеров wasm и Android `.so` |
 | `fixtures/` | черновик контракта v1 |

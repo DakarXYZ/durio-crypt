@@ -1,0 +1,7 @@
+dur.io crypto core (stoat-crypto)
+Copyright 2026 DakarX
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Built on matrix-sdk-crypto, matrix-sdk-sqlite, matrix-sdk-indexeddb and
+vodozemac by The Matrix.org Foundation (Apache-2.0).
