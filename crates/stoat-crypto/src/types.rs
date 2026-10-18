@@ -95,7 +95,8 @@ pub struct DecryptedMessage {
     pub stale_edit: bool,
     /// `edit_of` names another message than the one carrying it (CR-19)
     pub edit_mismatch: bool,
-    /// `in_reply_to` differs from the open `replies` (CR-19)
+    /// `in_reply_to` and the open `replies` name different messages (as sets:
+    /// order and duplicates do not count, the backend dedupes) (CR-19)
     pub reply_mismatch: bool,
 }
 

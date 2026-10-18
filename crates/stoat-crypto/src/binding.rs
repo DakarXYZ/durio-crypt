@@ -19,7 +19,7 @@
 //! The first id a device sees for a (session, index) wins: if the server
 //! serves the copy first, the original is the one flagged.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use async_lock::Mutex;
 use matrix_sdk_crypto::store::{CryptoStoreError, Store};
@@ -176,6 +176,16 @@ pub(crate) fn edit_mismatch(message_id: &str, edit_of: Option<&str>, edit_seq: u
     }
 }
 
+/// `in_reply_to` against the open `replies`, as sets: the backend drops
+/// duplicate reply ids (first occurrence wins) before storing them, so only
+/// *which* messages are replied to is bound, not order or repetition. An id
+/// added or removed by the server is a mismatch.
+pub(crate) fn reply_mismatch(in_reply_to: &[String], replies: &[String]) -> bool {
+    let sent: BTreeSet<&str> = in_reply_to.iter().map(String::as_str).collect();
+    let shown: BTreeSet<&str> = replies.iter().map(String::as_str).collect();
+    sent != shown
+}
+
 #[cfg(test)]
 mod tests {
     use matrix_sdk_crypto::OlmMachine;
@@ -260,5 +270,24 @@ mod tests {
         assert!(edit_mismatch("M", Some("N"), 1), "edit carried by another message");
         assert!(edit_mismatch("M", Some("M"), 0), "edit without a sequence");
         assert!(edit_mismatch("M", None, 2), "sequence without an edit");
+    }
+
+    #[test]
+    fn replies_compare_as_sets() {
+        let v = |ids: &[&str]| ids.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let table = [
+            (v(&[]), v(&[]), false),
+            (v(&["A"]), v(&["A"]), false),
+            // the backend dedupes, keeping the first occurrence
+            (v(&["A", "B", "A"]), v(&["A", "B"]), false),
+            (v(&["A", "B"]), v(&["B", "A"]), false),
+            (v(&["A"]), v(&[]), true),
+            (v(&[]), v(&["A"]), true),
+            (v(&["A"]), v(&["A", "B"]), true),
+            (v(&["A", "B"]), v(&["A", "C"]), true),
+        ];
+        for (sent, shown, mismatch) in table {
+            assert_eq!(reply_mismatch(&sent, &shown), mismatch, "{sent:?} / {shown:?}");
+        }
     }
 }

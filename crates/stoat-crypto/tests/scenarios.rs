@@ -167,6 +167,10 @@ async fn s07_server_tampering() {
     let mut rewired = reply.clone();
     rewired.replies = vec![];
     assert!(b.decrypt(&rewired).await.unwrap().reply_mismatch);
+    // … but the backend's own normalisation (duplicates dropped) is not
+    let mut deduped = reply.clone();
+    deduped.replies = vec![first_id.clone(), first_id.clone()];
+    assert!(!b.decrypt(&deduped).await.unwrap().reply_mismatch);
 
     // an edit, then the server serves the old version again
     let mut edit = text("edited");

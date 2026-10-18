@@ -1028,7 +1028,7 @@ impl CryptoMachine {
             .await
             .map_err(|_| DecryptError::Internal)?;
         let edit_mismatch = binding::edit_mismatch(&message.message_id, payload.edit_of.as_deref(), payload.edit_seq);
-        let reply_mismatch = payload.in_reply_to != message.replies;
+        let reply_mismatch = binding::reply_mismatch(&payload.in_reply_to, &message.replies);
 
         // shield (ADR 0001): backup / forwarded keys are never better than
         // Unauthenticated; the device hint must match the session owner
