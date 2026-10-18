@@ -25,6 +25,7 @@ matrix-sdk-indexeddb = { version = "=0.19.1", default-features = false, features
 ruma = { version = "=0.17.0", features = ["client-api-c"] }
 
 async-lock = "3"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 base64 = "0.22"
 http = "1"
 rand = "0.8"

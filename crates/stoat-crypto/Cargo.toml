@@ -1,12 +1,40 @@
 [package]
 name = "stoat-crypto"
-description = "dur.io crypto core"
+description = "dur.io crypto core: matrix-sdk-crypto behind a thin Stoat adapter"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 publish.workspace = true
+
+[dependencies]
+stoat-crypto-proto.workspace = true
+matrix-sdk-crypto.workspace = true
+matrix-sdk-common.workspace = true
+ruma.workspace = true
+async-lock.workspace = true
+futures-util.workspace = true
+http.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
+
+# Android / desktop / tests: SQLite store (values encrypted by StoreCipher)
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+matrix-sdk-sqlite.workspace = true
+
+# for-web inside the Windows client (CR-14, stage 5): IndexedDB store
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+matrix-sdk-crypto = { workspace = true, features = ["js"] }
+matrix-sdk-indexeddb.workspace = true
+
+[dev-dependencies]
+stoat-crypto-fakeserver.workspace = true
+proptest.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
 
 [lints]
 workspace = true
