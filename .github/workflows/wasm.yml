@@ -1,0 +1,81 @@
+# npm package @durio/stoat-crypto (CR-14): release wasm, size gate, wasm-bindgen tests in
+# Node, JS tests of the worker RPC, the package tarball and its SHA-256.
+# On a tag vX.Y.Z the tarball goes to the GitHub Release (next to the AAR, 60-deploy) and,
+# only when the repository variable NPM_PUBLISH is "true", to the npm registry
+# (secret NPM_TOKEN, scope @durio). Publishing is a deploy step: off until then.
+name: wasm
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - "crates/**"
+      - "bindings/web/**"
+      - "scripts/build-wasm.sh"
+      - "scripts/check-wasm-size.sh"
+      - "Cargo.*"
+      - ".github/workflows/wasm.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    env:
+      WASM_TOOLS: ${{ github.workspace }}/target/wasm-tools
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      # wasm-bindgen + test runner 0.2.129, binaryen 123, Node 22 (pinned SHA-256)
+      - run: scripts/build-wasm.sh tools
+      - run: cargo clippy --locked --target wasm32-unknown-unknown -p stoat-crypto-wasm --all-targets -- -D warnings
+      - name: Release wasm, size gate, package
+        run: scripts/build-wasm.sh build
+      - name: wasm-bindgen tests (Node) and worker RPC tests
+        run: scripts/build-wasm.sh test
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stoat-crypto-npm
+          path: bindings/web/build/
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      # npm provenance
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: stoat-crypto-npm
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          V=${TAG#v}
+          F=durio-stoat-crypto-$V.tgz
+          test -f "$F" || { echo "tag $TAG does not match the package version"; exit 1; }
+          sha256sum -c "$F.sha256"
+          # aar.yml creates the release of the same tag: wait for it, else create it
+          for _ in $(seq 30); do gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 && break; sleep 20; done
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 ||
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "stoat-crypto $V" --notes "stoat-crypto $V"
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber "$F" "$F.sha256"
+      - uses: actions/setup-node@v4
+        if: vars.NPM_PUBLISH == 'true'
+        with:
+          node-version: "22"
+          registry-url: https://registry.npmjs.org
+      - name: Publish to npm
+        if: vars.NPM_PUBLISH == 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish "durio-stoat-crypto-${GITHUB_REF_NAME#v}.tgz" --access public --provenance

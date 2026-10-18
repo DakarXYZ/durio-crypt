@@ -1,5 +1,5 @@
 # CI of the crypto core (CR-02). Read-only: nothing here publishes artifacts,
-# packages or releases — the AAR is built and released by aar.yml (CR-13), npm by CR-14.
+# packages or releases — the AAR is built and released by aar.yml (CR-13), the npm package by wasm.yml (CR-14).
 name: CI
 
 on:
@@ -56,8 +56,8 @@ jobs:
       - run: rustup show active-toolchain || rustup toolchain install
       - run: rustup target add wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
-      # build only; wasm-bindgen-test in headless Chrome/Node comes with CR-14 (stage 5)
-      - run: cargo check --locked --target wasm32-unknown-unknown -p stoat-crypto -p stoat-crypto-proto
+      # check only; the release wasm, size gate and tests in Node: wasm.yml (CR-14)
+      - run: cargo check --locked --target wasm32-unknown-unknown -p stoat-crypto -p stoat-crypto-proto -p stoat-crypto-wasm
 
   android:
     runs-on: ubuntu-latest
