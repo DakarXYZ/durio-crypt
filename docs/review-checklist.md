@@ -113,7 +113,7 @@
 | E5 | ❌→✅ | список был неполон: `EncryptedAttachment.fileJson` (ключ AES), `DecryptResult.Decrypted` (оборачивает `DecryptedMessage`), `KeyExport` — находка R2 | документация FFI `lib.rs`, `types.rs` |
 | F1 | ❌→✅ | `Debug` машины выводил всё состояние (id участников и ящика, шифротекст повторов и ожидающих ключа событий) — находка R1 | `machine_debug_names_the_account_only` |
 | F2 | ✅ | `diagnostics.rs` | `debug_report_has_no_secrets`, `key_export_and_import` (FFI) |
-| F3 | ✅/⚠️ | подписчика `tracing` в ядре и FFI нет; уровень в хосте — задача 5B (см. O-6) | — |
+| F3 | ✅ | подписчика `tracing` в ядре и FFI нет; в хосте — не ниже `WARN`, правило в Android (O-6, for-android `e9f2fb0a`) | `check-crypto-hygiene.sh` (Android) |
 | G1 | ✅ | `store.rs` (`StoreKey`), `backup.rs:84-92` (`RecoveryState: ZeroizeOnDrop`), `:450`, `:568`, `proto/recovery_key.rs`, `attachments.rs`, FFI `secret_string` | `debug_has_no_key`, `setup_debug_has_no_key` |
 | H1 | ✅ | `attachments.rs:169` (`ct_eq`); MAC — `matrix-sdk-crypto` (`verify_mac`, `SecretStorageKey::decrypt`) | `swapped_or_truncated_blob_yields_no_plaintext` |
 | I1 | ✅ | `Cargo.toml` `[workspace.lints.rust] unsafe_code = "forbid"`; у всех крейтов `lints.workspace = true` | компиляция |
@@ -134,10 +134,10 @@
 | --- | --- | --- | --- |
 | O-1 | ✅ PBKDF2-тяжёлые вызовы FFI (`export_room_keys`, `import_room_keys`, `unlock_backup`, `create_recovery` с паролем) — на блокирующем пуле рантайма (`runtime.rs::run_blocking`), оба рабочих потока свободны | `76498ae` | `blocking_work_leaves_the_workers_free` |
 | O-2 | ✅ Свои запросы ядра после неудачи — пауза `own_retry_ms` (1 с ×2, ≤ 15 мин, в `wakeup_in_ms`); после 3 постоянных отказов (4xx кроме 401/408/429) — выброшены, `RequestRejected`, `debug_report.requests.rejected`; выброшенный `SecretPut` уходит и из очереди в хранилище; повтор полного ящика при постоянном отказе сдаёт устройства. ADR A8, контракт хоста в документации крейта | `31fa59b`, `ff0b20f` | `own_requests_back_off_then_are_dropped`, `retries_refused_for_good_give_up_their_devices`, `own_requests_refused_for_good_are_dropped` |
-| O-3 | ⚠️ оставлено: `set_device_trust(Verified)` нужен тестам; контракт хоста, ядро и FFI явно говорят — хост ставит только `Unverified`/`Blocked`, `Verified` даёт SAS `Done`; Android закрепляет в `:core:crypto` (5B) | `c6e463d` | — |
+| O-3 | ✅ `set_device_trust(Verified)` в ядре оставлен для тестов; контракт хоста, ядро и FFI явно говорят — хост ставит только `Unverified`/`Blocked`, `Verified` даёт SAS `Done`. Android закрыл: `E2eeTrust` без `Verified`, `:core:crypto` переводит только два значения, `check-crypto-hygiene.sh` отвергает `Trust.VERIFIED` вне сравнений (for-android `d71a423b`) | `c6e463d`, for-android `d71a423b` | `E2eeTrustTest`, `ManualTrustRealCoreTest` (Android) |
 | O-4 | ✅ `in_reply_to` и `replies` сравниваются как множества: бэкенд убирает повторы id (`stoatchat` `messages/model.rs`, первое вхождение), порядок сохраняет — повтор id в `in_reply_to` давал ложный `reply_mismatch`; лишний/пропавший id по-прежнему помечается. `protocol.md` дополнен | `d6a583e` | `replies_compare_as_sets`, `s07_server_tampering` |
-| O-5 | ⚠️ без изменений: защита — документация и правило в Android (5B) | — | — |
-| O-6 | ⚠️ без изменений: уровень логов — у хоста (5B) | — | — |
+| O-5 | ✅ Android: `check-crypto-hygiene.sh` перечисляет UniFFI-типы с секретами в `toString()` (`DecryptResult`, `DecryptedMessage`, `RecoverySetup`, `EncryptedAttachment`, `KeyExport`, `StoreConfig`) и держит их в `:core:crypto` (он не логирует и не строит строки); секретные типы фасада — не `data class`; логи E2EE/push не интерполируют результаты расшифровки, файлы ключей, пароли, отчёты (for-android `e9f2fb0a`) | for-android `e9f2fb0a` | `SecretToStringTest` (Android) |
+| O-6 | ✅ ядро и FFI подписчика `tracing` не ставят и ничего не пишут; в Android моста `tracing` → Logcat нет, будущий мост проверка отвергнет, пока он не ограничен `WARN` (for-android `e9f2fb0a`) | for-android `e9f2fb0a` | `check-crypto-hygiene.sh` (Android) |
 | O-7 | ✅ Разбор заголовка — `proto::key_export::parse` (нормализация base64 без паддинга), ядро вызывает его до библиотеки; fuzz-цель `key_export` (+ в `fuzz.yml`): 60 с, 11,9 M запусков, падений нет | `7208cc8` | `header_fields_are_checked`, `overlapping_armor_is_refused` |
 | O-8 | ✅ Предел файла экспорта 64 МиБ (`key_export::MAX_FILE_LEN`, ≈ 90 000 сессий): длиннее — `InvalidKeyFile` до любой обработки; экспорт сверх предела не пишется (`InvalidKeyFile`: экспортировать меньше каналов) | `2d02958` | `oversized_files_are_refused_first`, `wrong_passphrase_or_broken_file` |
 
@@ -146,7 +146,41 @@ D4 (отказы своих запросов), B1–B5 (ответы как мн
 
 ## 5. Открыто (решения, не дефекты)
 
-- **O-3, O-5, O-6** — см. §4: закрываются на стороне Android (5B).
+- Открытых пунктов чек-листа нет: O-3, O-5, O-6 закрыты на стороне Android (§4, блок 5C-1).
+- Серверные ошибки, найденные нагрузкой и хаосом (B1–B4), — `docs/load-chaos.md` §4–5: не в ядре, но их
+  нужно закрыть до включения `features.e2ee` в проде.
 - Ослабления прошлых этапов (вытеснение таблиц CR-19, ≤ 512 каналов при поиске переноса, запросы ключей
   только к своим проверенным устройствам, подделываемость бэкапа v1, PBKDF2 для пароля, таймауты SAS) —
   `docs/security-review.md` §3, без изменений.
+
+## 6. T1–T19 на стенде (CR-15) — блок 5C-1, 2026-10-18
+
+Все сценарии плана (`docs/plan/00-architecture.md`, «Тест-сценарии») идут против живого бэкенда
+(`stoatchat` `durio/stage-2`, `scripts/testkit-backend.sh up && test`): 16 тестов `tests/live.rs`, все
+зелёные, `check` — в Mongo и MinIO только шифротекст. Нагрузка, хаос и найденные ошибки бэкенда —
+`docs/load-chaos.md`. Ошибок ядра стенд не нашёл.
+
+| Сценарий | Статус | Тест (`crates/stoat-crypto-testkit/tests/live.rs`) | Фейковый сервер (CR-18) |
+| --- | --- | --- | --- |
+| T1 ЛС, только шифротекст | живой | `t01_dm_send_receive` + `check` | `s01_dm_roundtrip_and_echo` |
+| T2 новое своё устройство | живой | `t02_new_device_and_key_forwarding` | `scenarios.rs` (CR-08) |
+| T3 бэкап по ключу восстановления | живой | `t03_backup_restore_and_mfa` | `backup.rs` |
+| T4 выход из сессии | живой | `t04_logout_cascade` | `s04_s05_membership_changes` |
+| T5 удалён участник группы | живой | `t05_group_member_leave_rotates` | `s04_s05_membership_changes` |
+| T6 добавлен участник | живой | `t06_member_added_reads_only_new` | `s04_s05_membership_changes` |
+| T7 ключ не доставлен → запрос у своих | живой | `t02_new_device_and_key_forwarding`, `q11_full_mailbox_retry` | `scenarios.rs`, `delivery.rs` |
+| T8 подмена канала/автора | живой (через API) | `t08_t16_t17_server_tampering` | `s07_server_tampering` |
+| T9 старый клиент | живой (HTTP и сокет: заглушка, `encryption_enabled`, отказ открытому тексту); отрисовку старым Android/SDK проверил ревьюер (C12) | `t09_old_client_view` | — |
+| T10 вложение с миниатюрой | живой | `t10_attachment_with_thumbnail` + `check` | `cr10_attachment_with_thumbnail` |
+| T11 push | живой без FCM: тестовый потребитель `notifications.outbound.fcm`; FCM `data` — юнит-тесты pushd | `t11_push_carries_only_the_envelope` | — |
+| T12 SAS | живой | `t12_sas_between_users` | `s08_sas_emoji_both_sides_verified` |
+| T13 кончились OTK | живой | `t13_otks_exhausted_fallback_then_replenish` | `s09_otk_exhausted_fallback_then_replenish` |
+| T14 два сервера | живой (два бэкенда, свои mongo/redis/rabbit); разделение хранилищ и push на клиенте — AN-06/AN-12 | `t14_two_servers_do_not_mix` | — |
+| T15 переустановка | живой (новая сессия = новое устройство; выход удаляет старое) | `t04_logout_cascade`, `t02_new_device_and_key_forwarding` | — |
+| T16 повтор под новым id | живой (через API) | `t08_t16_t17_server_tampering` | `s07_server_tampering`, `replay_and_rollback` |
+| T17 откат правки | живой (`PATCH` старым конвертом) | `t08_t16_t17_server_tampering` | `cr19_edit_binding` |
+| T18 снятие шифрования | живой (сервер не даёт; ядро хранит канал сам); предупреждение — хост (AN-39) | `t18_encryption_cannot_be_dropped` | — |
+| T19 краш между обработкой и ack | живой (SQLite, перезапуск) | `t19_crash_between_processing_and_ack` | `s12_crash_between_processing_and_ack` |
+
+Условие «бета» из шапки по части T1–T19 выполнено; бета остаётся до закрытия B1–B4 (`docs/load-chaos.md` §5)
+и release-замера на устройстве.
