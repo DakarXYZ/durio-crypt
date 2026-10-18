@@ -1,0 +1,860 @@
+//! `CryptoMachine`: the core's façade over `OlmMachine` (API sketch of
+//! 20-crypto-core). The client does all HTTP; the machine produces requests
+//! and consumes responses, to-device batches, WS events and messages.
+//!
+//! Adapter rules (ADR 0001):
+//! 1. to-device events go to the library one by one, in server order;
+//! 2. `get_missing_sessions(∅)` after each pass — part of `outgoing_requests`;
+//! 3. self and every member of an encrypted channel are tracked;
+//! 4. the library's `sender_key` is never forwarded, `device_id` is a hint;
+//! 5. one writer per account: file lock on open (CR-17) and serialized
+//!    mailbox processing / per-channel sending inside the machine.
+
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::panic::AssertUnwindSafe;
+use std::sync::{Arc, Mutex as SyncMutex};
+use std::time::Duration;
+
+use async_lock::Mutex;
+use futures_util::FutureExt;
+use matrix_sdk_common::deserialized_responses::{
+    DeviceLinkProblem, ProcessedToDeviceEvent, VerificationLevel, VerificationState,
+};
+use matrix_sdk_crypto::types::requests::AnyOutgoingRequest;
+use matrix_sdk_crypto::vodozemac::megolm::{DecryptionError, MegolmMessage};
+use matrix_sdk_crypto::{
+    CollectStrategy, DecryptionSettings, EncryptionSettings, EncryptionSyncChanges, EventError, LocalTrust,
+    MegolmError, OlmMachine, TrustRequirement,
+};
+use ruma::api::client::sync::sync_events::DeviceLists;
+use ruma::events::{AnyMessageLikeEventContent, AnyToDeviceEvent};
+use ruma::serde::Raw;
+use ruma::{OneTimeKeyAlgorithm, OwnedRoomId, OwnedUserId, UInt};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use stoat_crypto_proto::api::{KeysCountResponse, ToDeviceMessage};
+use stoat_crypto_proto::envelope::{EncryptedEnvelope, MAX_CIPHERTEXT_LEN};
+use stoat_crypto_proto::payload::{EVENT_TYPE, MegolmPlaintext, MessagePayload, PayloadError};
+
+use crate::error::{CryptoError, DecryptError, Result};
+use crate::ids;
+use crate::requests::{self, OutgoingRequest, RequestKind, Response};
+use crate::store::{self, Opened, StoreConfig};
+use crate::types::*;
+
+/// Prefix of our values in the library's custom-value table
+const KV_CHANNEL: &str = "stoat.channel.";
+const KV_REPLAY: &str = "stoat.replay.";
+const KV_EDIT: &str = "stoat.edit.";
+
+/// Persisted members and settings of an encrypted channel
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct ChannelState {
+    /// Member user ids (ULIDs), self included
+    members: BTreeSet<String>,
+    settings: ChannelEncryptionSettings,
+}
+
+/// Last shown version of a message (CR-19 edits)
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct EditRecord {
+    edit_seq: u64,
+    session_id: String,
+    message_index: u32,
+}
+
+fn decryption_settings() -> DecryptionSettings {
+    // no cross-signing in v1: device trust is computed by the core
+    DecryptionSettings {
+        sender_device_trust_requirement: TrustRequirement::Untrusted,
+    }
+}
+
+fn store_err<E>(op: &'static str) -> impl FnOnce(E) -> CryptoError {
+    move |_| CryptoError::Store(op)
+}
+
+/// Core crypto state of one account on one server
+#[derive(Clone, Debug)]
+pub struct CryptoMachine {
+    inner: Arc<Inner>,
+}
+
+#[derive(Debug)]
+struct Inner {
+    machine: OlmMachine,
+    user_ulid: String,
+    device_ulid: String,
+    user_id: OwnedUserId,
+    /// C2: mailbox ids processed (committed) but not acknowledged yet; the lock
+    /// also serializes everything that goes through `receive_sync_changes`
+    sync: Mutex<BTreeSet<String>>,
+    channels: Mutex<HashMap<String, ChannelState>>,
+    /// per-channel send lock: `prepare_send` + `encrypt` never interleave
+    send_locks: SyncMutex<HashMap<String, Arc<Mutex<()>>>>,
+    /// in-flight `keys/claim`: never two at once (each claim burns OTKs)
+    claim: Mutex<Option<OutgoingRequest>>,
+    /// CR-19 tables: read-modify-write under one lock
+    replay: Mutex<()>,
+    /// dropped last: the store must close before the lock is released
+    _opened_lock: StoreLockHolder,
+}
+
+#[derive(Debug)]
+struct StoreLockHolder {
+    #[cfg(not(target_arch = "wasm32"))]
+    _lock: Option<crate::lock::StoreLock>,
+}
+
+impl CryptoMachine {
+    // ------------------------------------------------------------ lifecycle
+
+    /// Open (or create) the crypto state of `user` (ULID) on this device
+    /// (session ULID). Fails with `StoreLocked` if another instance has the
+    /// store open, `StoreMismatch` if it belongs to another account.
+    // wasm is single-threaded: the library types are not `Send` there
+    #[cfg_attr(target_arch = "wasm32", allow(clippy::arc_with_non_send_sync))]
+    pub async fn open(user: &str, device: &str, store: StoreConfig) -> Result<Self> {
+        let user_id = ids::user_id(user)?;
+        let device_id = ids::device_id(device)?;
+        let Opened {
+            machine,
+            #[cfg(not(target_arch = "wasm32"))]
+            lock,
+        } = store::open(&user_id, &device_id, &store).await?;
+
+        // C2: the processed-but-unacked set committed with the last batch
+        let processed = match machine
+            .store()
+            .next_batch_token()
+            .await
+            .map_err(store_err("read token"))?
+        {
+            Some(t) => serde_json::from_str(&t).unwrap_or_default(),
+            None => BTreeSet::new(),
+        };
+        // rule 3: always track ourselves (own devices for SAS and key forwarding)
+        machine
+            .update_tracked_users([user_id.as_ref()])
+            .await
+            .map_err(store_err("track self"))?;
+
+        Ok(Self {
+            inner: Arc::new(Inner {
+                machine,
+                user_ulid: user.to_ascii_uppercase(),
+                device_ulid: device.to_owned(),
+                user_id,
+                sync: Mutex::new(processed),
+                channels: Mutex::new(HashMap::new()),
+                send_locks: SyncMutex::new(HashMap::new()),
+                claim: Mutex::new(None),
+                replay: Mutex::new(()),
+                _opened_lock: StoreLockHolder {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    _lock: lock,
+                },
+            }),
+        })
+    }
+
+    /// Delete the store of a signed-out account (files, not rows). The
+    /// machine must be closed (dropped) first, else `StoreLocked`.
+    pub fn destroy(store: &StoreConfig) -> Result<()> {
+        store::destroy(store)
+    }
+
+    pub fn user_id(&self) -> &str {
+        &self.inner.user_ulid
+    }
+
+    pub fn device_id(&self) -> &str {
+        &self.inner.device_ulid
+    }
+
+    pub fn identity_keys(&self) -> IdentityKeys {
+        let k = self.inner.machine.identity_keys();
+        IdentityKeys {
+            curve25519: k.curve25519.to_base64(),
+            ed25519: k.ed25519.to_base64(),
+        }
+    }
+
+    fn olm(&self) -> &OlmMachine {
+        &self.inner.machine
+    }
+
+    // ------------------------------------------------------------- requests
+
+    /// Requests to perform now: key upload, key queries, to-device (key
+    /// requests and forwards, verification) and the Olm sessions the library
+    /// needs outside of a send (rule 2). A claim is handed out once and
+    /// repeated until it is marked sent or failed.
+    pub async fn outgoing_requests(&self) -> Result<Vec<OutgoingRequest>> {
+        let olm = self.olm();
+        let mut out = Vec::new();
+        for r in olm.outgoing_requests().await.map_err(store_err("outgoing requests"))? {
+            if let Some(r) = requests::from_library(r.request_id(), r.request())? {
+                out.push(r);
+            }
+        }
+        let mut claim = self.inner.claim.lock().await;
+        match claim.as_ref() {
+            Some(pending) => out.push(pending.clone()),
+            None => {
+                if let Some((id, req)) = olm
+                    .get_missing_sessions(std::iter::empty())
+                    .await
+                    .map_err(store_err("missing sessions"))?
+                {
+                    let r = requests::keys_claim(&id, &req)?;
+                    *claim = Some(r.clone());
+                    out.push(r);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Report a successful response (`body` = response JSON)
+    pub async fn mark_request_sent(&self, id: &str, kind: RequestKind, body: &str) -> Result<()> {
+        let response = Response::parse(kind, body)?;
+        response.mark_sent(self.olm(), id).await?;
+        if kind == RequestKind::KeysClaim {
+            self.release_claim(id).await;
+        }
+        Ok(())
+    }
+
+    /// Report an HTTP failure. Requests are regenerated or kept pending by the
+    /// library, so this mostly frees the claim slot; a 409 on our own key
+    /// upload means the server has other keys for this device.
+    pub async fn mark_request_failed(&self, id: &str, kind: RequestKind, status: u16) -> Result<()> {
+        if kind == RequestKind::KeysClaim {
+            self.release_claim(id).await;
+        }
+        if kind == RequestKind::KeysUpload && status == 409 {
+            return Err(CryptoError::DeviceKeysConflict);
+        }
+        Ok(())
+    }
+
+    async fn release_claim(&self, id: &str) {
+        let mut claim = self.inner.claim.lock().await;
+        if claim.as_ref().is_some_and(|c| c.id == id) {
+            *claim = None;
+        }
+    }
+
+    // ---------------------------------------------------------------- inbox
+
+    /// One `receive_sync_changes` call with the current processed-set token
+    async fn sync_changes(
+        &self,
+        processed: &BTreeSet<String>,
+        events: Vec<Raw<AnyToDeviceEvent>>,
+        changed: &DeviceLists,
+        counts: Option<(&BTreeMap<OneTimeKeyAlgorithm, UInt>, &[OneTimeKeyAlgorithm])>,
+    ) -> Result<(
+        Vec<ProcessedToDeviceEvent>,
+        Vec<matrix_sdk_crypto::store::types::RoomKeyInfo>,
+    )> {
+        let empty = BTreeMap::new();
+        let token = serde_json::to_string(processed).map_err(|_| CryptoError::Internal("token"))?;
+        let changes = EncryptionSyncChanges {
+            to_device_events: events,
+            changed_devices: changed,
+            one_time_keys_counts: counts.map_or(&empty, |c| c.0),
+            unused_fallback_keys: counts.map(|c| c.1),
+            next_batch_token: Some(token),
+        };
+        // the MSC4186 variant treats missing counts as unknown, not as zero:
+        // a call without counts must not trigger an OTK upload
+        self.olm()
+            .receive_sync_changes_msc4186(changes, &decryption_settings())
+            .await
+            .map_err(store_err("receive sync changes"))
+    }
+
+    /// Process a mailbox batch (`GET /e2ee/to_device`), in server order, one
+    /// event per library call (rule 1). Each event's id is committed together
+    /// with its crypto changes; ids already committed are dropped before the
+    /// library (C2, S12). Send `ack_ids` in `ack`, then call `mark_ack_sent`.
+    pub async fn receive_to_device(&self, messages: Vec<ToDeviceMessage>) -> Result<ToDeviceResult> {
+        let mut processed = self.inner.sync.lock().await;
+        let mut result = ToDeviceResult::default();
+        let mut in_batch = HashSet::new();
+        let no_lists = DeviceLists::new();
+        for m in messages {
+            if !in_batch.insert(m.id.clone()) {
+                result.skipped_duplicates += 1;
+                continue;
+            }
+            result.ack_ids.push(m.id.clone());
+            if processed.contains(&m.id) {
+                result.skipped_duplicates += 1;
+                continue;
+            }
+            // our mailbox item → Matrix to-device event
+            let event = json!({ "sender": m.sender, "type": m.event_type, "content": m.content });
+            let raw = Raw::from_json(
+                serde_json::value::to_raw_value(&event).map_err(|_| CryptoError::Internal("to-device"))?,
+            );
+            let mut next = processed.clone();
+            next.insert(m.id.clone());
+            let (events, keys) = self.sync_changes(&next, vec![raw], &no_lists, None).await?;
+            *processed = next;
+            result.processed += 1;
+            result.undecryptable += events
+                .iter()
+                .filter(|e| matches!(e, ProcessedToDeviceEvent::UnableToDecrypt { .. }))
+                .count();
+            result.room_keys.extend(keys.into_iter().filter_map(|k| {
+                Some(RoomKeyInfo {
+                    channel_id: ids::channel_ulid(&k.room_id)?,
+                    session_id: k.session_id,
+                })
+            }));
+        }
+        Ok(result)
+    }
+
+    /// The server confirmed `POST /e2ee/to_device/ack {ids}`: forget the ids
+    pub async fn mark_ack_sent(&self, ack_ids: &[String]) -> Result<()> {
+        let mut processed = self.inner.sync.lock().await;
+        let before = processed.len();
+        for id in ack_ids {
+            processed.remove(id);
+        }
+        if processed.len() != before {
+            self.sync_changes(&processed, vec![], &DeviceLists::new(), None).await?;
+        }
+        Ok(())
+    }
+
+    /// `E2eeDeviceListUpdate {user}` from the socket (user ULIDs)
+    pub async fn receive_device_list_update(&self, users: &[String]) -> Result<()> {
+        let mut lists = DeviceLists::new();
+        lists.changed = users.iter().map(|u| ids::user_id(u)).collect::<Result<_>>()?;
+        let processed = self.inner.sync.lock().await;
+        self.sync_changes(&processed, vec![], &lists, None).await?;
+        Ok(())
+    }
+
+    /// Socket reconnected: device lists may have changed unseen — every
+    /// tracked user is queried again in one batch (Q10)
+    pub async fn receive_reconnect(&self) -> Result<()> {
+        self.olm()
+            .mark_all_tracked_users_as_dirty()
+            .await
+            .map_err(store_err("mark tracked users dirty"))
+    }
+
+    /// `GET /e2ee/keys/count` (or `E2eeKeysLow`): replenish OTKs, create a
+    /// fallback key when none is unused
+    pub async fn receive_otk_counts(&self, counts: &KeysCountResponse) -> Result<()> {
+        let otk: BTreeMap<OneTimeKeyAlgorithm, UInt> = counts
+            .one_time_key_counts
+            .iter()
+            .map(|(k, v)| (OneTimeKeyAlgorithm::from(k.as_str()), UInt::new_saturating(*v)))
+            .collect();
+        let fallback: Vec<OneTimeKeyAlgorithm> = counts
+            .device_unused_fallback_key_types
+            .iter()
+            .map(|k| OneTimeKeyAlgorithm::from(k.as_str()))
+            .collect();
+        let processed = self.inner.sync.lock().await;
+        self.sync_changes(&processed, vec![], &DeviceLists::new(), Some((&otk, &fallback)))
+            .await?;
+        Ok(())
+    }
+
+    // ------------------------------------------------------------- channels
+
+    fn send_lock(&self, channel: &str) -> Arc<Mutex<()>> {
+        let mut locks = self.inner.send_locks.lock().unwrap_or_else(|e| e.into_inner());
+        locks.entry(channel.to_owned()).or_default().clone()
+    }
+
+    /// Full member list of an encrypted channel (ULIDs) and its settings.
+    /// Members are tracked (rule 3); a member who left makes the library rotate
+    /// the outbound session on the next send.
+    pub async fn set_channel_members(
+        &self,
+        channel: &str,
+        members: &[String],
+        settings: ChannelEncryptionSettings,
+    ) -> Result<()> {
+        ids::room_id(channel)?;
+        let mut set = BTreeSet::new();
+        let mut users = vec![self.inner.user_id.clone()];
+        for m in members {
+            users.push(ids::user_id(m)?);
+            set.insert(m.to_ascii_uppercase());
+        }
+        set.insert(self.inner.user_ulid.clone());
+        self.olm()
+            .update_tracked_users(users.iter().map(|u| u.as_ref()))
+            .await
+            .map_err(store_err("track members"))?;
+        let key = channel.to_ascii_uppercase();
+        let state = ChannelState { members: set, settings };
+        let lock = self.send_lock(channel);
+        let _guard = lock.lock().await;
+        let previous = self.load_channel(&key).await?;
+        self.olm()
+            .store()
+            .set_value(&format!("{KV_CHANNEL}{key}"), &state)
+            .await
+            .map_err(store_err("save channel"))?;
+        // the library keeps the settings of a running session: new rotation
+        // limits take effect with a new session
+        if previous.is_some_and(|p| p.settings != settings) {
+            self.olm()
+                .discard_room_key(&ids::room_id(channel)?)
+                .await
+                .map_err(store_err("discard room key"))?;
+        }
+        self.inner.channels.lock().await.insert(key, state);
+        Ok(())
+    }
+
+    /// Channel state from the cache, else from the store
+    async fn load_channel(&self, key: &str) -> Result<Option<ChannelState>> {
+        let mut channels = self.inner.channels.lock().await;
+        if let Some(s) = channels.get(key) {
+            return Ok(Some(s.clone()));
+        }
+        let stored: Option<ChannelState> = self
+            .olm()
+            .store()
+            .get_value(&format!("{KV_CHANNEL}{key}"))
+            .await
+            .map_err(store_err("load channel"))?;
+        if let Some(s) = &stored {
+            channels.insert(key.to_owned(), s.clone());
+        }
+        Ok(stored)
+    }
+
+    async fn channel(&self, channel: &str) -> Result<(OwnedRoomId, Vec<OwnedUserId>, EncryptionSettings)> {
+        let room = ids::room_id(channel)?;
+        let state = self
+            .load_channel(&channel.to_ascii_uppercase())
+            .await?
+            .ok_or(CryptoError::UnknownChannel)?;
+        let users = state
+            .members
+            .iter()
+            .map(|m| ids::user_id(m))
+            .collect::<Result<Vec<_>>>()?;
+        let defaults = EncryptionSettings::default();
+        let settings = EncryptionSettings {
+            rotation_period: state
+                .settings
+                .rotation_period_ms
+                .map_or(defaults.rotation_period, Duration::from_millis),
+            rotation_period_msgs: state
+                .settings
+                .rotation_period_msgs
+                .unwrap_or(defaults.rotation_period_msgs),
+            // v1 trust model: every device of every member, no cross-signing (ADR 0001)
+            sharing_strategy: CollectStrategy::AllDevices,
+            ..defaults
+        };
+        Ok((room, users, settings))
+    }
+
+    /// Key queries in flight or due for any of `users`
+    async fn pending_key_queries(&self, users: &[OwnedUserId]) -> Result<Vec<OutgoingRequest>> {
+        let mut queries = Vec::new();
+        for r in self
+            .olm()
+            .outgoing_requests()
+            .await
+            .map_err(store_err("outgoing requests"))?
+        {
+            if let AnyOutgoingRequest::KeysQuery(q) = r.request()
+                && q.device_keys.keys().any(|u| users.contains(u))
+                && let Some(r) = requests::from_library(r.request_id(), r.request())?
+            {
+                queries.push(r);
+            }
+        }
+        Ok(queries)
+    }
+
+    /// Steps before sending to `channel`. Returns the next requests to run:
+    /// key queries of members, then one claim of missing Olm sessions, then the
+    /// room key to-device messages. Run them, mark them, call again — an empty
+    /// list means `encrypt` can go.
+    pub async fn prepare_send(&self, channel: &str) -> Result<Vec<OutgoingRequest>> {
+        let lock = self.send_lock(channel);
+        let _guard = lock.lock().await;
+        let (room, users, settings) = self.channel(channel).await?;
+        let olm = self.olm();
+
+        // 1. members whose devices are not known yet (blocking query, CR-07)
+        let queries = self.pending_key_queries(&users).await?;
+        if !queries.is_empty() {
+            return Ok(queries);
+        }
+
+        // 2. Olm sessions to every member device (one claim in flight)
+        {
+            let mut claim = self.inner.claim.lock().await;
+            if let Some(pending) = claim.as_ref() {
+                return Ok(vec![pending.clone()]);
+            }
+            if let Some((id, req)) = olm
+                .get_missing_sessions(users.iter().map(|u| u.as_ref()))
+                .await
+                .map_err(store_err("missing sessions"))?
+            {
+                let r = requests::keys_claim(&id, &req)?;
+                *claim = Some(r.clone());
+                return Ok(vec![r]);
+            }
+        }
+
+        // 3. room key to every device that does not have it (rotation if needed)
+        let shares = olm
+            .share_room_key(&room, users.iter().map(|u| u.as_ref()), settings)
+            .await
+            .map_err(store_err("share room key"))?;
+        shares.iter().map(|r| requests::to_device(r)).collect()
+    }
+
+    /// Encrypt a payload v1 for `channel` into envelope v1. The room key must
+    /// be shared (`prepare_send` returned nothing), else `RoomKeyNotShared`.
+    /// The advanced ratchet is stored before the envelope is returned.
+    pub async fn encrypt(&self, channel: &str, payload: &MessagePayload) -> Result<EncryptedEnvelope> {
+        let padded = payload.to_padded_value().map_err(|e| match e {
+            PayloadError::TooLarge => CryptoError::PayloadTooLarge,
+            _ => CryptoError::InvalidPayload,
+        })?;
+        let raw: Raw<AnyMessageLikeEventContent> =
+            Raw::from_json(serde_json::value::to_raw_value(&padded).map_err(|_| CryptoError::InvalidPayload)?);
+
+        let lock = self.send_lock(channel);
+        let _guard = lock.lock().await;
+        let (room, users, settings) = self.channel(channel).await?;
+        let olm = self.olm();
+        // member devices unknown: sharing now would silently skip them
+        if !self.pending_key_queries(&users).await?.is_empty() {
+            return Err(CryptoError::RoomKeyNotShared);
+        }
+        // nothing pending means: session exists, is shared and not expired —
+        // `encrypt_room_event_raw` panics otherwise
+        let pending = olm
+            .share_room_key(&room, users.iter().map(|u| u.as_ref()), settings)
+            .await
+            .map_err(store_err("share room key"))?;
+        if !pending.is_empty() {
+            return Err(CryptoError::RoomKeyNotShared);
+        }
+        let encrypted = AssertUnwindSafe(olm.encrypt_room_event_raw(&room, EVENT_TYPE, &raw))
+            .catch_unwind()
+            .await
+            .map_err(|_| CryptoError::Internal("encrypt panicked"))?
+            .map_err(store_err("encrypt"))?;
+        let content: Value =
+            serde_json::from_str(encrypted.content.json().get()).map_err(|_| CryptoError::Internal("encrypt"))?;
+        let field = |name: &str| {
+            content
+                .get(name)
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .ok_or(CryptoError::Internal("encrypt"))
+        };
+        // rule 4: the library's `sender_key` stays out of the envelope (Q5)
+        let envelope = EncryptedEnvelope::megolm(
+            field("session_id")?,
+            self.inner.device_ulid.clone(),
+            field("ciphertext")?,
+        );
+        if envelope.ciphertext.len() > MAX_CIPHERTEXT_LEN {
+            return Err(CryptoError::PayloadTooLarge);
+        }
+        Ok(envelope)
+    }
+
+    /// Drop the outbound session of `channel`: the next send creates and
+    /// shares a new one
+    pub async fn invalidate_outbound_session(&self, channel: &str) -> Result<()> {
+        let room = ids::room_id(channel)?;
+        let lock = self.send_lock(channel);
+        let _guard = lock.lock().await;
+        self.olm()
+            .discard_room_key(&room)
+            .await
+            .map_err(store_err("discard room key"))?;
+        Ok(())
+    }
+
+    // -------------------------------------------------------------- decrypt
+
+    /// Decrypt one message and evaluate everything the UI needs: shield,
+    /// replay, edit and reply binding (CR-19).
+    pub async fn decrypt(&self, message: &IncomingEncryptedMessage) -> Result<DecryptedMessage, DecryptError> {
+        let env = &message.envelope;
+        env.validate()?;
+        let room = ids::room_id(&message.channel_id).map_err(|_| DecryptError::Corrupted)?;
+        let author = ids::user_id(&message.author).map_err(|_| DecryptError::Corrupted)?;
+        let index = MegolmMessage::from_base64(&env.ciphertext)
+            .map_err(|_| DecryptError::Corrupted)?
+            .message_index();
+
+        // the author's devices must be known to link the session to a device
+        let olm = self.olm();
+        if !olm
+            .tracked_users()
+            .await
+            .map_err(|_| DecryptError::Internal)?
+            .contains(&author)
+        {
+            olm.update_tracked_users([author.as_ref()])
+                .await
+                .map_err(|_| DecryptError::Internal)?;
+        }
+
+        // Stoat message → Matrix `m.room.encrypted` (CR-20), without `sender_key`
+        let event = json!({
+            "type": "m.room.encrypted",
+            "sender": author,
+            "event_id": format!("${}", message.message_id),
+            "origin_server_ts": message.timestamp,
+            "room_id": room,
+            "content": {
+                "algorithm": env.algorithm,
+                "ciphertext": env.ciphertext,
+                "session_id": env.session_id,
+                "device_id": env.device_id,
+            },
+        });
+        let raw = Raw::from_json(serde_json::value::to_raw_value(&event).map_err(|_| DecryptError::Corrupted)?);
+        let decrypted = olm
+            .decrypt_room_event(&raw, &room, &decryption_settings())
+            .await
+            .map_err(map_megolm_error)?;
+
+        let plaintext: Value =
+            serde_json::from_str(decrypted.event.json().get()).map_err(|_| DecryptError::Corrupted)?;
+        let plaintext = MegolmPlaintext::from_value(&plaintext).map_err(|e| match e {
+            PayloadError::UnsupportedVersion => DecryptError::UnsupportedVersion,
+            _ => DecryptError::Corrupted,
+        })?;
+        let payload = plaintext.content;
+        let info = &decrypted.encryption_info;
+        let session_id = info.session_id().unwrap_or(&env.session_id).to_owned();
+        let sender_device = info.sender_device.as_ref().map(|d| d.to_string());
+
+        let (is_replay, stale_edit) = self
+            .check_replay_and_edit(&message.message_id, &session_id, index, payload.edit_seq)
+            .await
+            .map_err(|_| DecryptError::Internal)?;
+        let edit_mismatch = payload.edit_of.as_ref().is_some_and(|o| o != &message.message_id);
+        let reply_mismatch = payload.in_reply_to != message.replies;
+
+        // shield (ADR 0001): backup / forwarded keys are never better than
+        // Unauthenticated; the device hint must match the session owner
+        let indirect = match olm.store().get_inbound_group_session(&room, &session_id).await {
+            Ok(Some(s)) => s.has_been_imported() || s.forwarder_data.is_some(),
+            _ => false,
+        };
+        let verification = match &info.verification_state {
+            VerificationState::Unverified(VerificationLevel::MismatchedSender) => Verification::Mismatch,
+            VerificationState::Unverified(VerificationLevel::None(DeviceLinkProblem::InsecureSource)) => {
+                Verification::Unauthenticated
+            }
+            _ if indirect => Verification::Unauthenticated,
+            _ => match &sender_device {
+                None => Verification::UnknownDevice,
+                Some(d) if d != &env.device_id => Verification::Mismatch,
+                Some(d) => match olm.get_device(&info.sender, d.as_str().into(), None).await {
+                    Ok(Some(dev)) if dev.is_verified() => Verification::Verified,
+                    Ok(Some(_)) => Verification::Unverified,
+                    _ => Verification::UnknownDevice,
+                },
+            },
+        };
+
+        Ok(DecryptedMessage {
+            payload,
+            sender_user: ids::user_ulid(&info.sender).ok_or(DecryptError::SenderMismatch)?,
+            sender_device,
+            verification,
+            session_id,
+            message_index: index,
+            is_replay,
+            stale_edit,
+            edit_mismatch,
+            reply_mismatch,
+        })
+    }
+
+    /// History page: one call for many messages (results in input order)
+    pub async fn decrypt_batch(
+        &self,
+        messages: &[IncomingEncryptedMessage],
+    ) -> Vec<Result<DecryptedMessage, DecryptError>> {
+        let mut out = Vec::with_capacity(messages.len());
+        for m in messages {
+            out.push(self.decrypt(m).await);
+        }
+        out
+    }
+
+    /// CR-19 (early, persisted; to be reviewed in block 3B):
+    /// * `(session, index)` seen under another message id → replay;
+    /// * per message the highest `edit_seq` shown; an older version with
+    ///   another ciphertext → stale edit. Re-decrypting the same ciphertext
+    ///   (history reload) is neither.
+    async fn check_replay_and_edit(
+        &self,
+        message_id: &str,
+        session_id: &str,
+        index: u32,
+        edit_seq: u64,
+    ) -> std::result::Result<(bool, bool), matrix_sdk_crypto::store::CryptoStoreError> {
+        let _guard = self.inner.replay.lock().await;
+        let store = self.olm().store();
+        let replay_key = format!("{KV_REPLAY}{session_id}.{index}");
+        let is_replay = match store.get_value::<String>(&replay_key).await? {
+            Some(prev) => prev != message_id,
+            None => {
+                store.set_value(&replay_key, &message_id).await?;
+                false
+            }
+        };
+        if is_replay {
+            return Ok((true, false));
+        }
+        let edit_key = format!("{KV_EDIT}{message_id}");
+        let stale = match store.get_value::<EditRecord>(&edit_key).await? {
+            Some(r) if r.session_id == session_id && r.message_index == index => false,
+            Some(r) if edit_seq <= r.edit_seq => true,
+            _ => {
+                let record = EditRecord {
+                    edit_seq,
+                    session_id: session_id.to_owned(),
+                    message_index: index,
+                };
+                store.set_value(&edit_key, &record).await?;
+                false
+            }
+        };
+        Ok((false, stale))
+    }
+
+    // ----------------------------------------------------------- devices
+
+    /// Devices of a user (ULID) as known locally
+    pub async fn devices(&self, user: &str) -> Result<Vec<DeviceInfo>> {
+        let user_id = ids::user_id(user)?;
+        let devices = self
+            .olm()
+            .get_user_devices(&user_id, None)
+            .await
+            .map_err(store_err("devices"))?;
+        Ok(devices
+            .devices()
+            .map(|d| DeviceInfo {
+                user_id: user.to_ascii_uppercase(),
+                device_id: d.device_id().to_string(),
+                curve25519: d.curve25519_key().map(|k| k.to_base64()),
+                ed25519: d.ed25519_key().map(|k| k.to_base64()),
+                trust: match d.local_trust_state() {
+                    LocalTrust::Verified => Trust::Verified,
+                    LocalTrust::BlackListed => Trust::Blocked,
+                    _ => Trust::Unverified,
+                },
+                deleted: d.is_deleted(),
+            })
+            .collect())
+    }
+
+    /// Set the local trust of a device (after SAS, or to block it)
+    pub async fn set_device_trust(&self, user: &str, device: &str, trust: Trust) -> Result<()> {
+        let user_id = ids::user_id(user)?;
+        let device_id = ids::device_id(device)?;
+        let d = self
+            .olm()
+            .get_device(&user_id, &device_id, None)
+            .await
+            .map_err(store_err("device"))?
+            .ok_or(CryptoError::InvalidId)?;
+        d.set_local_trust(match trust {
+            Trust::Verified => LocalTrust::Verified,
+            Trust::Unverified => LocalTrust::Unset,
+            Trust::Blocked => LocalTrust::BlackListed,
+        })
+        .await
+        .map_err(store_err("set trust"))
+    }
+}
+
+/// CR-20: library decryption errors → `DecryptError`
+pub(crate) fn map_megolm_error(e: MegolmError) -> DecryptError {
+    match e {
+        MegolmError::MissingRoomKey(_) => DecryptError::MissingRoomKey,
+        // we hold the session, but only from a later index
+        MegolmError::Decryption(DecryptionError::UnknownMessageIndex(..)) => DecryptError::MissingRoomKey,
+        MegolmError::EventError(EventError::MismatchedRoom(..)) => DecryptError::ChannelMismatch,
+        MegolmError::EventError(EventError::UnsupportedAlgorithm) => DecryptError::UnknownAlgorithm,
+        MegolmError::EventError(EventError::MismatchedSender(..) | EventError::MismatchedKeys(..))
+        | MegolmError::MismatchedIdentityKeys(_) => DecryptError::SenderMismatch,
+        MegolmError::Store(_) => DecryptError::Internal,
+        _ => DecryptError::Corrupted,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use matrix_sdk_crypto::store::CryptoStoreError;
+    use ruma::{room_id, user_id};
+
+    use super::*;
+
+    /// CR-20: the error table
+    #[test]
+    fn megolm_error_table() {
+        let table = [
+            (MegolmError::MissingRoomKey(None), DecryptError::MissingRoomKey),
+            (
+                MegolmError::Decryption(DecryptionError::UnknownMessageIndex(3, 1)),
+                DecryptError::MissingRoomKey,
+            ),
+            (
+                MegolmError::EventError(EventError::MismatchedRoom(
+                    room_id!("!a:stoat.invalid").to_owned(),
+                    Some(room_id!("!b:stoat.invalid").to_owned()),
+                )),
+                DecryptError::ChannelMismatch,
+            ),
+            (
+                MegolmError::EventError(EventError::UnsupportedAlgorithm),
+                DecryptError::UnknownAlgorithm,
+            ),
+            (
+                MegolmError::EventError(EventError::MismatchedSender(
+                    user_id!("@a:stoat.invalid").to_owned(),
+                    user_id!("@b:stoat.invalid").to_owned(),
+                )),
+                DecryptError::SenderMismatch,
+            ),
+            (
+                MegolmError::EventError(EventError::MissingCiphertext),
+                DecryptError::Corrupted,
+            ),
+            (
+                MegolmError::Store(CryptoStoreError::UnpicklingError),
+                DecryptError::Internal,
+            ),
+        ];
+        for (e, expected) in table {
+            let shown = format!("{e:?}");
+            assert_eq!(map_megolm_error(e), expected, "{shown}");
+        }
+    }
+}

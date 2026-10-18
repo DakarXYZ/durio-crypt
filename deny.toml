@@ -16,7 +16,11 @@ exclude = ["spike-msc", "spike-vodozemac"]
 [advisories]
 version = 2
 yanked = "deny"
-ignore = []
+ignore = [
+    # unmaintained, no fix; only in the wasm build through matrix-sdk-indexeddb
+    # (matrix_indexed_db_futures -> wasm_evt_listener). Revisit on library upgrade.
+    { id = "RUSTSEC-2024-0388", reason = "transitive via matrix-sdk-indexeddb 0.19.1, wasm only" },
+]
 
 [licenses]
 version = 2
@@ -28,7 +32,7 @@ allow = [
     "MIT",
     "BSD-2-Clause",
     "BSD-3-Clause",
-    "ISC",
+    "BSL-1.0",
     "Unicode-3.0",
     "MPL-2.0",
     "Zlib",
