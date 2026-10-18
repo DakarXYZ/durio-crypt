@@ -1,7 +1,8 @@
 # Версии и совместимость ядра (CR-23)
 
-Ядро `stoat-crypto` и его привязки (AAR, позже npm-пакет wasm) имеют **одну** версию — версию крейтов workspace
-(`Cargo.toml`, `[workspace.package]`). Тег `vX.Y.Z` в `durio-crypt` выпускает AAR той же версии.
+Ядро `stoat-crypto` и его привязки (AAR и npm-пакет `@durio/stoat-crypto`) имеют **одну** версию — версию
+крейтов workspace (`Cargo.toml`, `[workspace.package]`; `bindings/web/package.json` сверяется сборкой). Тег `vX.Y.Z`
+в `durio-crypt` выпускает AAR и tarball npm-пакета той же версии (`aar.yml`, `wasm.yml`).
 
 ## Semver
 
@@ -61,4 +62,7 @@ Kotlin/JS-код клиента видит смену MINOR как ломающ�
 
 ## Открыто
 
-- Матрица версий «Android × веб» в CI стенда (CR-15) — когда появится второй клиент (этап 5, CR-14).
+- Матрица версий «Android × веб» в CI стенда (CR-15): привязки wasm есть (CR-14, 0.2.0), прогон двух клиентов
+  на стенде — с WEB-08.
+- Снимок хранилища IndexedDB («N−1 открывается в N» для веба): в Node нет IndexedDB, нужен headless Chrome в CI
+  (CR-14 отложил); до него веб полагается на миграции библиотеки и на тот же формат `custom_value`, что SQLite.

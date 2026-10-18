@@ -150,6 +150,29 @@
 //!   `AttachmentHashMismatch` → show nothing (the server swapped the blob).
 //!   Never stream plaintext to a decoder before `finish()` succeeded.
 //!
+//! ## for-web (CR-14)
+//!
+//! The same contract through `@durio/stoat-crypto` (`stoat-crypto-wasm`,
+//! `bindings/web`): one dedicated Web Worker per account holds the wasm and
+//! the machine; the page calls it over a small RPC.
+//!
+//! * **Store**: IndexedDB `durio-e2ee-<accountKey>` (two databases, see
+//!   [`indexeddb_names`]), values encrypted with the raw 32-byte key from
+//!   Electron `safeStorage`, no PBKDF2 on open.
+//! * **One writer** (CR-17, Q28): the file lock does not exist in the
+//!   browser, and the library does not stop a second machine on the same
+//!   databases. The worker opens the store only while it holds the Web Lock
+//!   `durio-e2ee:<accountKey>` (`navigator.locks.request(name, {mode:
+//!   "exclusive", ifAvailable: true})`) and keeps it until `close` or
+//!   termination; another holder → `StoreLocked` ("encryption is active in
+//!   another window": no sending in encrypted channels). Never open the
+//!   store without the lock.
+//! * **Sign-out**: close the machine, then delete both databases under the
+//!   same lock (`destroyStore` of the worker; [`CryptoMachine::destroy`]
+//!   refuses IndexedDB stores).
+//! * A panic aborts the wasm instance: the worker answers `Panic` from then
+//!   on and releases the lock; start a new worker.
+//!
 //! [`set_server_limits`]: CryptoMachine::set_server_limits
 //! [`receive_reconnect`]: CryptoMachine::receive_reconnect
 //! [`receive_otk_counts`]: CryptoMachine::receive_otk_counts

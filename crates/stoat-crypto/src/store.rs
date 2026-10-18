@@ -113,7 +113,8 @@ pub(crate) async fn open(user_id: &UserId, device_id: &DeviceId, config: &StoreC
         }
         #[cfg(target_arch = "wasm32")]
         StoreConfig::IndexedDb { name, key } => {
-            // single writer in the browser: Web Locks around the machine (CR-14)
+            // single writer in the browser: the worker holds the Web Lock
+            // `durio-e2ee:<accountKey>` around the machine (CR-14)
             let store = matrix_sdk_indexeddb::IndexeddbCryptoStore::open_with_key(name, key.bytes())
                 .await
                 .map_err(|_| CryptoError::Store("open indexeddb"))?;
@@ -152,14 +153,14 @@ pub(crate) fn destroy(config: &StoreConfig) -> Result<()> {
             Ok(())
         }
         #[cfg(target_arch = "wasm32")]
-        // the library deletes its databases only in its own tests; until the
-        // wasm bindings (CR-14) the host deletes `indexeddb_names(name)` itself
+        // the library deletes its databases only in its own tests; the web
+        // worker deletes `indexeddb_names(name)` under the Web Lock (CR-14)
         StoreConfig::IndexedDb { .. } => Err(CryptoError::Store("delete indexeddb store")),
     }
 }
 
 /// IndexedDB databases `matrix-sdk-indexeddb` creates for a store `name`
-/// (to be deleted by the host on sign-out until CR-14 does it here)
+/// (deleted on sign-out by the web worker's `destroyStore`, CR-14)
 pub fn indexeddb_names(name: &str) -> [String; 2] {
     [
         format!("{name}::matrix-sdk-crypto"),
