@@ -16,6 +16,7 @@ publish = false
 [workspace.dependencies]
 stoat-crypto-proto = { path = "crates/stoat-crypto-proto" }
 stoat-crypto-fakeserver = { path = "crates/stoat-crypto-fakeserver" }
+stoat-crypto = { path = "crates/stoat-crypto" }
 
 # Exact pins (ADR 0001): update once a quarter in a separate PR.
 matrix-sdk-crypto = { version = "=0.19.1", default-features = false, features = ["automatic-room-key-forwarding"] }
@@ -32,6 +33,9 @@ sha2 = "0.11"
 subtle = "2.6"
 bs58 = { version = "0.5.1", default-features = false, features = ["alloc"] }
 rand_10 = { package = "rand", version = "0.10.2" }
+
+# CR-13: Kotlin bindings (MPL-2.0, see deny.toml); proc-macro mode, no UDL
+uniffi = { version = "=0.32.2", default-features = false }
 
 async-lock = "3"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
@@ -90,3 +94,9 @@ opt-level = 3
 
 [profile.dev.package.hmac]
 opt-level = 3
+
+# AAR (CR-13): `s`, not `z` — on ARM `s` is about as small and not slower
+# (measured in bindings/android/README.md); unwind kept for the FFI fence
+[profile.release-android]
+inherits = "release"
+opt-level = "s"

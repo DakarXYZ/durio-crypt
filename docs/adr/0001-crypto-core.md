@@ -157,3 +157,20 @@
   только после `unlock_backup` с ключом восстановления; версия с публичным ключом, не совпадающим с ключом из
   секрета, отвергается (`BackupKeyMismatch`).
 - Чек-лист ревью и принятые ослабления — `docs/security-review.md`; отличия протокола — `docs/protocol.md`.
+
+## Дополнения (блок 3D, 2026-10-18)
+
+### A5. FFI (CR-13)
+
+- **Рантайм.** `#[uniffi::export(async_runtime = "tokio")]` не используется: каждый async-экспорт
+  `stoat-crypto-ffi` кладёт работу задачей на **один** многопоточный tokio-рантайм процесса (2 воркера + пул
+  блокирующих для SQLite), Kotlin ждёт `JoinHandle`. Паника в задаче → `CryptoException.Panic`, отмена корутины
+  не останавливает операцию (она дописывает результат). Синхронные экспорты — `catch_unwind` внутри контекста
+  рантайма. Объекты, держащие машину, освобождаются в контексте рантайма (`InRuntime`): `Drop` пула
+  `matrix-sdk-sqlite` требует tokio.
+- **Форма API.** Тела запросов/ответов, payload, конверт и `EncryptedFile` — JSON-строки; всё, по чему ветвится
+  UI (`RequestKind`, `DecryptResult`, `SasState`, ошибки), — типы. Ошибка расшифровки — значение
+  (`DecryptResult.Failed`). Kotlin-пакет `uniffi.stoat_crypto`, `android_cleaner = false` (minSdk 26).
+- **Размер.** Профиль `release-android` (`opt-level = "s"`): arm64 10,09 МБ stripped / 3,77 МБ gzip, порог CI
+  +5 % (`scripts/check-so-size.sh`), выравнивание `LOAD` 16 КБ у 64-битных ABI. Вдвое больше пробы CR-01: проба
+  не затрагивала SAS/бэкап/секреты, а `panic = "unwind"` сохраняет таблицы раскрутки.

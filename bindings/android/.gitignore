@@ -1,0 +1,6 @@
+# produced by scripts/build-aar.sh
+/build
+/.gradle
+/local.properties
+/src/main/jniLibs
+/src/main/kotlin

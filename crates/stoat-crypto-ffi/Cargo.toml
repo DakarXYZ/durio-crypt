@@ -1,0 +1,39 @@
+[package]
+name = "stoat-crypto-ffi"
+description = "dur.io crypto core for Android: UniFFI bindings (Kotlin) over stoat-crypto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lib]
+# cdylib: the .so in the AAR; lib: the bindgen binary and the Rust tests
+crate-type = ["cdylib", "lib"]
+
+# `uniffi-bindgen` of exactly the library's uniffi version (CR-13):
+# cargo run -p stoat-crypto-ffi --features bindgen --bin uniffi-bindgen -- generate --library <so> ...
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["bindgen"]
+
+[features]
+bindgen = ["uniffi/cli", "uniffi/cargo-metadata"]
+
+[dependencies]
+stoat-crypto.workspace = true
+uniffi.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+zeroize.workspace = true
+
+[dev-dependencies]
+stoat-crypto-fakeserver.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

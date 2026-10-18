@@ -634,7 +634,7 @@ impl CryptoMachine {
         users.sort();
         users.dedup();
         self.olm()
-            .update_tracked_users(users.iter().map(|u| u.as_ref()))
+            .update_tracked_users(users.iter().map(OwnedUserId::as_ref))
             .await
             .map_err(store_err("track members"))?;
         let key = channel.to_ascii_uppercase();
@@ -788,7 +788,7 @@ impl CryptoMachine {
         // 2. Olm sessions to every member device (one claim in flight)
         if ob.claim.is_none()
             && let Some((id, req)) = olm
-                .get_missing_sessions(users.iter().map(|u| u.as_ref()))
+                .get_missing_sessions(users.iter().map(OwnedUserId::as_ref))
                 .await
                 .map_err(store_err("missing sessions"))?
         {
@@ -800,7 +800,7 @@ impl CryptoMachine {
 
         // 3. room key to every device that does not have it (rotation if needed)
         let shares = olm
-            .share_room_key(&room, users.iter().map(|u| u.as_ref()), settings)
+            .share_room_key(&room, users.iter().map(OwnedUserId::as_ref), settings)
             .await
             .map_err(store_err("share room key"))?;
         let mut out = Vec::new();
@@ -836,7 +836,7 @@ impl CryptoMachine {
         // nothing pending means: session exists, is shared and not expired —
         // `encrypt_room_event_raw` panics otherwise
         let pending = olm
-            .share_room_key(&room, users.iter().map(|u| u.as_ref()), settings)
+            .share_room_key(&room, users.iter().map(OwnedUserId::as_ref), settings)
             .await
             .map_err(store_err("share room key"))?;
         if !pending.is_empty() {

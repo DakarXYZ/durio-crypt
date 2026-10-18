@@ -1,0 +1,77 @@
+# AAR of the crypto core (CR-13): build, size gate, JVM tests of the bindings.
+# On a tag vX.Y.Z the AAR, its SHA-256 and POM go to the GitHub Release
+# (60-deploy §2.1); for-android pins the SHA-256 (Gradle dependency verification).
+name: AAR
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - "crates/**"
+      - "bindings/android/**"
+      - "scripts/build-aar.sh"
+      - "scripts/check-so-size.sh"
+      - "Cargo.*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  aar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: r28c
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-ndk
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: "platforms;android-37 build-tools;36.0.0"
+      - name: Rust libraries, size gate, bindings
+        run: scripts/build-aar.sh native
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+      - name: JVM tests, AAR, test APK, maven layout
+        run: scripts/build-aar.sh gradle
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stoat-crypto-aar
+          path: |
+            bindings/android/build/dist/
+            bindings/android/build/maven/
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: aar
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: stoat-crypto-aar
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          V=${TAG#v}
+          test -f dist/stoat-crypto-$V.aar || { echo "tag $TAG does not match the crate version"; exit 1; }
+          (cd dist && sha256sum -c stoat-crypto-$V.aar.sha256)
+          cp maven/io/github/dakarxyz/durio/stoat-crypto/$V/stoat-crypto-$V.pom dist/
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "stoat-crypto $V" \
+            --notes "AAR io.github.dakarxyz.durio:stoat-crypto:$V. SHA-256: $(cut -d' ' -f1 dist/stoat-crypto-$V.aar.sha256)" \
+            dist/stoat-crypto-$V.aar dist/stoat-crypto-$V.aar.sha256 dist/stoat-crypto-$V.pom

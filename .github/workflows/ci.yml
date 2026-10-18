@@ -1,5 +1,5 @@
 # CI of the crypto core (CR-02). Read-only: nothing here publishes artifacts,
-# packages or releases — AAR/npm publishing is a separate, manual workflow (CR-13/14).
+# packages or releases — the AAR is built and released by aar.yml (CR-13), npm by CR-14.
 name: CI
 
 on:
@@ -73,7 +73,8 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-ndk
-      - run: cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 build --locked -p stoat-crypto
+      # debug build of the FFI crate (the core included); release + size gate: aar.yml
+      - run: cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 build --locked -p stoat-crypto-ffi
         env:
           ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
 

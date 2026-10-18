@@ -86,6 +86,9 @@
 | Чужая новая версия бэкапа не подхватывается молча | `backup.rs` | `rotation_and_backup_replaced_elsewhere` |
 | Запрет `unwrap/expect/panic!` вне тестов в `stoat-crypto` и `proto` (два `expect("loaded")` убраны) | `lib.rs` | clippy |
 | Fuzz-цель ключа восстановления | `fuzz/fuzz_targets/recovery_key.rs` | ночной CI |
+| Каждый экспорт UniFFI — за забором паник: async — задача на рантайме ядра (паника = `JoinError` → `CryptoException.Panic`), sync — `catch_unwind` (блок 3D) | `stoat-crypto-ffi/src/runtime.rs` | `panics_become_typed_errors`, `async_panics_become_typed_errors` |
+| Объекты с машиной (`CryptoMachine`, `SasHandle`, `BackupRestore`) освобождаются внутри рантайма: `close()` из Kotlin-потока иначе ронял процесс (пул SQLite зовёт `spawn_blocking` в `Drop`) — найдено JVM-тестом биндингов | `runtime.rs` (`InRuntime`) | `close_outside_any_runtime`, `BindingsJvmTest.sqliteStore` |
+| Секреты из Kotlin (ключ хранилища, ключ восстановления, пароль) — `ByteArray`, копия ядра обнуляется; `Debug` записей FFI без ключей и текста | `types.rs` | `backup_errors_are_typed`, `dm_roundtrip_and_batch` |
 
 ## 3. Принятые ослабления
 

@@ -1,0 +1,8 @@
+# Kotlin bindings of the AAR (CR-13, AN-20)
+[bindings.kotlin]
+package_name = "uniffi.stoat_crypto"
+cdylib_name = "stoat_crypto_ffi"
+# Android: JNA from the `jna@aar`; no android.system.SystemCleaner (API 33+),
+# the app's minSdk is 26 — objects are closed explicitly (AutoCloseable)
+android = true
+android_cleaner = false
