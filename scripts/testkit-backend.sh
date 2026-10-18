@@ -228,8 +228,8 @@ run_chaos() {
     rc=${rc:-1}
     wait $logs 2>/dev/null || true
     docker rm -f $name >/dev/null 2>&1 || true
-    # leave the stack as the scenarios found it; the services lose their
-    # RabbitMQ connection for good when the broker restarts: restart them
+    # leave the stack as the scenarios found it (fresh services, nothing
+    # left over from the outages)
     for s in redis rabbit; do running durio-test-$s || docker start durio-test-$s >/dev/null; done
     for s in $SERVICES; do docker restart durio-test-$s >/dev/null 2>&1 || docker start durio-test-$s >/dev/null; done
     wait_delta durio-test-delta
