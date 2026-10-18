@@ -656,6 +656,66 @@ impl From<sc::RestoreProgress> for RestoreProgress {
     }
 }
 
+// ----------------------------------------------------------- key export
+
+/// A key export file (CR-21): save `data` as text (`.txt`). Ciphertext, but
+/// not for logs either.
+#[derive(Clone, uniffi::Record)]
+pub struct KeyExport {
+    pub data: String,
+    /// Sessions in the file
+    pub sessions: u32,
+}
+
+impl fmt::Debug for KeyExport {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("KeyExport")
+            .field("data_len", &self.data.len())
+            .field("sessions", &self.sessions)
+            .finish()
+    }
+}
+
+impl From<sc::KeyExport> for KeyExport {
+    fn from(e: sc::KeyExport) -> Self {
+        Self {
+            sessions: count(e.sessions),
+            data: e.data,
+        }
+    }
+}
+
+/// Outcome of `import_room_keys`: re-decrypt messages waiting for
+/// `room_keys`; imported keys show as `Unauthenticated`
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct KeyImportResult {
+    /// Sessions in the file
+    pub total: u32,
+    /// New or better keys stored
+    pub imported: u32,
+    /// Sessions of non-Stoat rooms (another Matrix client's export), left out
+    pub skipped: u32,
+    pub room_keys: Vec<RoomKeyInfo>,
+}
+
+impl From<sc::KeyImportResult> for KeyImportResult {
+    fn from(r: sc::KeyImportResult) -> Self {
+        Self {
+            total: count(r.total),
+            imported: count(r.imported),
+            skipped: count(r.skipped),
+            room_keys: r
+                .room_keys
+                .into_iter()
+                .map(|k| RoomKeyInfo {
+                    channel_id: k.channel_id,
+                    session_id: k.session_id,
+                })
+                .collect(),
+        }
+    }
+}
+
 /// Input of a recovery field, checked as the user types
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
 pub enum RecoveryKeyCheck {

@@ -221,6 +221,10 @@ impl CryptoMachine {
         &self.inner.machine
     }
 
+    pub(crate) fn key_requests(&self) -> &SyncMutex<KeyRequests> {
+        &self.inner.key_requests
+    }
+
     pub(crate) fn flows(&self) -> std::sync::MutexGuard<'_, Flows> {
         self.inner.flows.lock().unwrap_or_else(|e| e.into_inner())
     }

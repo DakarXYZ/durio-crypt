@@ -130,6 +130,39 @@ object Scenarios {
         }
     }
 
+    /** Key export to a password-protected file and import on a new device (CR-21) */
+    suspend fun keyExport() {
+        val server = MiniServer()
+        val deviceA2 = "01KDA2".padEnd(26, '2')
+        Device.open(server, USER_A, DEVICE_A).use { a ->
+            Device.open(server, USER_B, DEVICE_B).use { b ->
+                for (d in listOf(a, b)) {
+                    d.machine.setChannelMembers(CHANNEL, listOf(USER_A, USER_B), ChannelEncryptionSettings(null, null))
+                }
+                val sent = b.send(CHANNEL, "exported")
+                a.sync()
+                val passphrase = "pass phrase".toByteArray()
+                val export = a.machine.exportRoomKeys(passphrase.copyOf(), emptyList())
+                passphrase.fill(0)
+                assertEquals(1u, export.sessions)
+                assertTrue(export.data.startsWith("-----BEGIN MEGOLM SESSION DATA-----"))
+                Device.open(server, USER_A, deviceA2).use { a2 ->
+                    try {
+                        a2.machine.importRoomKeys(export.data, "wrong".toByteArray())
+                        fail("wrong passphrase accepted")
+                    } catch (e: CryptoException.WrongPassphrase) {
+                    }
+                    val r = a2.machine.importRoomKeys(export.data, "pass phrase".toByteArray())
+                    assertEquals(1u, r.imported)
+                    assertEquals(CHANNEL, r.roomKeys.single().channelId)
+                    val got = a2.machine.decrypt(sent)
+                    assertEquals("exported", content(got))
+                    assertEquals(Verification.UNAUTHENTICATED, (got as DecryptResult.Decrypted).message.verification)
+                }
+            }
+        }
+    }
+
     /** SQLite store: the key must be 32 bytes, one machine per store, destroy after close */
     suspend fun sqliteStore(dir: File) {
         val path = dir.absolutePath

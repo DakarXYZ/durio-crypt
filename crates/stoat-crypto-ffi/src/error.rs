@@ -66,6 +66,15 @@ pub enum CryptoError {
     /// The blob is not the one the sender encrypted: show nothing of it
     #[error("{0}")]
     AttachmentHashMismatch(String),
+    /// `export_room_keys` with an empty passphrase
+    #[error("{0}")]
+    PassphraseRequired(String),
+    /// Not a key export file (or a cut-off one)
+    #[error("{0}")]
+    InvalidKeyFile(String),
+    /// The key file does not open with this passphrase (or was modified)
+    #[error("{0}")]
+    WrongPassphrase(String),
     #[error("{0}")]
     Internal(String),
     /// Input from the host is malformed (not UTF-8, wrong length)
@@ -119,6 +128,9 @@ impl From<Core> for CryptoError {
             Core::InvalidRecoveryData => Self::InvalidRecoveryData(m),
             Core::InvalidAttachment => Self::InvalidAttachment(m),
             Core::AttachmentHashMismatch => Self::AttachmentHashMismatch(m),
+            Core::PassphraseRequired => Self::PassphraseRequired(m),
+            Core::InvalidKeyFile => Self::InvalidKeyFile(m),
+            Core::WrongPassphrase => Self::WrongPassphrase(m),
             Core::Internal(_) => Self::Internal(m),
         }
     }

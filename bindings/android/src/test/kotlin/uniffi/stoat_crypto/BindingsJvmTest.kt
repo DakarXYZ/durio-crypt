@@ -24,6 +24,9 @@ class BindingsJvmTest {
     fun sas() = runBlocking { Scenarios.sas() }
 
     @Test
+    fun keyExport() = runBlocking { Scenarios.keyExport() }
+
+    @Test
     fun sqliteStore() = runBlocking {
         val dir = Files.createTempDirectory("stoat-crypto").toFile()
         try {

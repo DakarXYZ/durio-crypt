@@ -188,6 +188,50 @@ async fn dm_roundtrip_and_batch() {
     );
 }
 
+/// CR-21 through the bindings: passphrase as bytes, typed errors, imported
+/// keys `Unauthenticated`
+#[tokio::test]
+async fn key_export_and_import() {
+    let server = FakeServer::new().shared();
+    let a = Client::open(&server, "A", "A1", StoreConfig::Memory).await;
+    let b = Client::open(&server, "B", "B1", StoreConfig::Memory).await;
+    let ch = dm(&a, &b, "C").await;
+    b.send(&ch, text_payload("kept".into(), "AAAAAAAAAAAAAAAAAAAAAA".into(), 1))
+        .await;
+    a.sync().await;
+
+    let export = a.m.export_room_keys(b"pass phrase".to_vec(), vec![]).await.unwrap();
+    assert_eq!(export.sessions, 1);
+    assert!(!format!("{export:?}").contains(&export.data[40..60]));
+    assert!(matches!(
+        a.m.export_room_keys(Vec::new(), vec![]).await,
+        Err(CryptoError::PassphraseRequired(_))
+    ));
+
+    let a2 = Client::open(&server, "A", "A2", StoreConfig::Memory).await;
+    assert!(matches!(
+        a2.m.import_room_keys(export.data.clone(), b"wrong".to_vec()).await,
+        Err(CryptoError::WrongPassphrase(_))
+    ));
+    assert!(matches!(
+        a2.m.import_room_keys("not a key file".into(), b"pass phrase".to_vec())
+            .await,
+        Err(CryptoError::InvalidKeyFile(_))
+    ));
+    let r =
+        a2.m.import_room_keys(export.data, b"pass phrase".to_vec())
+            .await
+            .unwrap();
+    assert_eq!((r.total, r.imported, r.skipped), (1, 1, 0));
+    assert_eq!(r.room_keys[0].channel_id, ch);
+    let got = a2.m.decrypt(a2.incoming(&ch)[0].clone()).await.unwrap();
+    assert_eq!(content(&got), "kept");
+    let DecryptResult::Decrypted { message } = got else {
+        unreachable!()
+    };
+    assert_eq!(message.verification, Verification::Unauthenticated);
+}
+
 #[tokio::test]
 async fn sas_through_handles() {
     let server = FakeServer::new().shared();

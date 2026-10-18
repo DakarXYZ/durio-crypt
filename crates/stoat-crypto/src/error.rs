@@ -76,6 +76,16 @@ pub enum CryptoError {
     /// nothing of it
     #[error("attachment hash mismatch")]
     AttachmentHashMismatch,
+    /// A key export needs a passphrase (CR-21)
+    #[error("a passphrase is required")]
+    PassphraseRequired,
+    /// Not a key export file (no armor, malformed, unknown version or an
+    /// absurd key derivation cost) (CR-21)
+    #[error("not a valid key export file")]
+    InvalidKeyFile,
+    /// The key file does not open with this passphrase (or was modified)
+    #[error("wrong passphrase for the key file")]
+    WrongPassphrase,
     /// Unexpected library failure in an operation
     #[error("internal crypto error during {0}")]
     Internal(&'static str),
@@ -107,6 +117,9 @@ impl CryptoError {
             Self::VerificationNotActive => "verification_not_active",
             Self::InvalidAttachment => "invalid_attachment",
             Self::AttachmentHashMismatch => "attachment_hash_mismatch",
+            Self::PassphraseRequired => "passphrase_required",
+            Self::InvalidKeyFile => "invalid_key_file",
+            Self::WrongPassphrase => "wrong_passphrase",
             Self::Internal(_) => "internal",
         }
     }

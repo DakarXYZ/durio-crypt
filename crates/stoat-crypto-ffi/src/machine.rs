@@ -13,8 +13,8 @@ use crate::runtime::{InRuntime, guard, run, run_value};
 use crate::sas::SasHandle;
 use crate::types::{
     BackupStatus, ChannelEncryptionSettings, DecryptResult, DeviceInfo, IdentityKeys, IncomingEncryptedMessage,
-    OutgoingRequest, RecoverySecrets, RecoverySetup, RequestKind, ServerLimits, StoreConfig, Timing, ToDeviceResult,
-    Trust, UndeliveredDevice, payload_from_json, requests, secret_string,
+    KeyExport, KeyImportResult, OutgoingRequest, RecoverySecrets, RecoverySetup, RequestKind, ServerLimits,
+    StoreConfig, Timing, ToDeviceResult, Trust, UndeliveredDevice, payload_from_json, requests, secret_string,
 };
 
 /// Crypto state of one account on one server. Open once per process
@@ -310,6 +310,29 @@ impl CryptoMachine {
     pub async fn disable_backup(&self) -> Result<(), CryptoError> {
         let m = self.core();
         run(async move { Ok(m.disable_backup().await?) }).await
+    }
+
+    // ---------------------------------------------------------- key export
+
+    /// Room keys of `channel_ids` (all if empty) → a file encrypted with
+    /// `passphrase` (UTF-8 bytes, not empty; the caller zeroes its array).
+    /// About a second of PBKDF2.
+    pub async fn export_room_keys(
+        &self,
+        passphrase: Vec<u8>,
+        channel_ids: Vec<String>,
+    ) -> Result<KeyExport, CryptoError> {
+        let passphrase = secret_string(passphrase)?;
+        let m = self.core();
+        run(async move { Ok(m.export_room_keys(&passphrase, &channel_ids).await?.into()) }).await
+    }
+
+    /// Import a key file (`data` of an export, or another Matrix client's);
+    /// `WrongPassphrase` / `InvalidKeyFile` on failure, nothing imported then
+    pub async fn import_room_keys(&self, file: String, passphrase: Vec<u8>) -> Result<KeyImportResult, CryptoError> {
+        let passphrase = secret_string(passphrase)?;
+        let m = self.core();
+        run(async move { Ok(m.import_room_keys(&file, &passphrase).await?.into()) }).await
     }
 }
 

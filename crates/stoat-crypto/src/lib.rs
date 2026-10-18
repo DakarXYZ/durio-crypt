@@ -100,6 +100,19 @@
 //! After a failed request, back off before the next pass: a request the
 //! core keeps (secrets, backup batch, own to-device) comes back every pass.
 //!
+//! ## Key export to a file (CR-21)
+//!
+//! * **Export** (settings → "Export keys"): ask for a passphrase twice →
+//!   [`export_room_keys`] (all channels, or the chosen ones) → save `data`
+//!   as a text file where the user picks (Storage Access Framework). The
+//!   file is the Matrix "Megolm session export": other Matrix clients read
+//!   it too.
+//! * **Import** (new install without the backup): file + passphrase →
+//!   [`import_room_keys`]; `WrongPassphrase` (or the file was modified) vs
+//!   `InvalidKeyFile`; then re-decrypt messages waiting for the returned
+//!   `room_keys`. Imported keys show `Unauthenticated`, like restored ones.
+//!   Both take about a second of PBKDF2.
+//!
 //! ## Attachments (CR-10)
 //!
 //! * **Upload**: per file [`AttachmentEncryptor::new`] → `update` per chunk
@@ -139,6 +152,8 @@
 //! [`unlock_backup`]: CryptoMachine::unlock_backup
 //! [`restore_backup`]: CryptoMachine::restore_backup
 //! [`backup_status`]: CryptoMachine::backup_status
+//! [`export_room_keys`]: CryptoMachine::export_room_keys
+//! [`import_room_keys`]: CryptoMachine::import_room_keys
 
 // CR-16: no panics on paths the host calls (FFI turns them into exceptions,
 // but a panic midway can leave half-done state); tests may
@@ -158,6 +173,7 @@ mod backup;
 mod batch;
 mod binding;
 mod error;
+mod export;
 mod gossip;
 mod ids;
 #[cfg(not(target_arch = "wasm32"))]
@@ -176,6 +192,7 @@ pub use attachments::{
 pub use backup::{BackupRestore, BackupStatus, RESTORE_BATCH, RecoverySecrets, RecoverySetup, RestoreProgress};
 pub use batch::ServerLimits;
 pub use error::{CryptoError, DecryptError, DecryptFailureKind, Result, WithheldReason};
+pub use export::{EXPORT_ROUNDS, KeyExport, KeyImportResult};
 pub use machine::CryptoMachine;
 pub use outbox::{Timing, UndeliveredDevice};
 pub use requests::{OutgoingRequest, RequestKind};
