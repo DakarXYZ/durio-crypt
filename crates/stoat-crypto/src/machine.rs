@@ -47,7 +47,7 @@ use crate::diagnostics::Recorder;
 use crate::error::{CryptoError, DecryptError, Result, WithheldReason};
 use crate::gossip::{self, KeyRequests};
 use crate::ids;
-use crate::outbox::{self, KV_RETRIES, Outbox, PartMark, Timing, UndeliveredDevice};
+use crate::outbox::{self, KV_RETRIES, Outbox, OwnFailure, PartMark, Timing, UndeliveredDevice};
 use crate::requests::{self, OutgoingRequest, RequestKind, Response};
 use crate::store::{self, Opened, StoreConfig};
 use crate::types::*;
@@ -420,9 +420,12 @@ impl CryptoMachine {
         Ok(())
     }
 
-    /// Report an HTTP failure. The request (or the part of it) comes back
-    /// from `outgoing_requests` / `prepare_send`; a 409 on our own key upload
-    /// means the server has other keys for this device.
+    /// Report an HTTP failure (`status` 0: no response). The request (or
+    /// the part of it) comes back from `outgoing_requests` / `prepare_send`
+    /// — a request of the core itself only after its backoff; refused
+    /// permanently three times it is dropped: `RequestRejected` (review
+    /// O-2). A 409 on our own key upload means the server has other keys
+    /// for this device.
     pub async fn mark_request_failed(&self, id: &str, kind: RequestKind, status: u16) -> Result<()> {
         self.touch();
         self.recorder().request_failed(kind, status);
@@ -437,10 +440,26 @@ impl CryptoMachine {
         }
         let mut ob = self.inner.outbox.lock().await;
         if ob.is_retry(id) {
-            ob.retry_failed(id);
+            if ob.retry_failed(id, status) {
+                self.save_retries(&ob).await?;
+            }
             return Ok(());
         }
-        if ob.is_own(id) || ob.is_part(id) {
+        // review O-2: own requests back off; refused for good, they are dropped
+        if ob.is_own(id) {
+            match ob.own_failed(id, status) {
+                OwnFailure::Later => return Ok(()),
+                OwnFailure::Dropped(dropped) => {
+                    drop(ob);
+                    if dropped == RequestKind::SecretPut {
+                        // not again after a restart either
+                        self.secret_stored(id).await?;
+                    }
+                    return Err(CryptoError::RequestRejected);
+                }
+            }
+        }
+        if ob.is_part(id) {
             return Ok(());
         }
         ob.forget(id);

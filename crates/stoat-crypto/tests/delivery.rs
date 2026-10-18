@@ -364,3 +364,67 @@ async fn failed_part_is_retried_alone() {
         assert_eq!(r.read(&m).await, "parts");
     }
 }
+
+/// Review O-2: an own request the server refuses for good (here a secret
+/// upload, 400) is retried with backoff, dropped after three refusals with
+/// `RequestRejected`, listed in `debug_report` and not queued again after a
+/// restart; a request pass never hands out a request that is backing off.
+#[tokio::test]
+async fn own_requests_refused_for_good_are_dropped() {
+    let srv = server();
+    let dir = tempfile::tempdir().unwrap();
+    let a = Device::login_sqlite(&srv, "A", "A1", dir.path()).await;
+    let setup = a.m().create_recovery(None).await.unwrap();
+    a.run_setup(&setup, false).await.unwrap();
+    let secrets = |reqs: &[stoat_crypto::OutgoingRequest]| {
+        reqs.iter()
+            .filter(|r| r.kind == RequestKind::SecretPut)
+            .map(|r| r.id.clone())
+            .collect::<Vec<_>>()
+    };
+    let ids = secrets(&a.m().outgoing_requests().await.unwrap());
+    assert_eq!(ids.len(), 3);
+    let victim = ids[0].clone();
+
+    // a transient failure: backs off (default 1 s), the pass skips it
+    a.m()
+        .mark_request_failed(&victim, RequestKind::SecretPut, 503)
+        .await
+        .unwrap();
+    let pass = secrets(&a.m().outgoing_requests().await.unwrap());
+    assert!(!pass.contains(&victim) && pass.len() == 2);
+    assert!(a.m().wakeup_in_ms().await.is_some_and(|ms| ms <= 1_000));
+
+    // refused for good three times (no delay in tests)
+    a.m()
+        .set_timing(Timing {
+            own_retry_ms: 0,
+            ..fast()
+        })
+        .await;
+    for _ in 0..2 {
+        a.m()
+            .mark_request_failed(&victim, RequestKind::SecretPut, 400)
+            .await
+            .unwrap();
+        assert!(secrets(&a.m().outgoing_requests().await.unwrap()).contains(&victim));
+    }
+    assert_eq!(
+        a.m()
+            .mark_request_failed(&victim, RequestKind::SecretPut, 400)
+            .await
+            .unwrap_err(),
+        stoat_crypto::CryptoError::RequestRejected
+    );
+    assert!(!secrets(&a.m().outgoing_requests().await.unwrap()).contains(&victim));
+    let report: Value = serde_json::from_str(&a.m().debug_report().await.unwrap()).unwrap();
+    assert_eq!(report["requests"]["rejected"][0]["kind"], "secret_put");
+    assert_eq!(report["requests"]["rejected"][0]["status"], 400);
+    assert_eq!(report["requests"]["rejected"][0]["attempts"], 4);
+
+    // the other two still go up; the dropped one is not back after a restart
+    let mut a = a;
+    a.sync().await;
+    a.restart().await;
+    assert!(secrets(&a.m().outgoing_requests().await.unwrap()).is_empty());
+}

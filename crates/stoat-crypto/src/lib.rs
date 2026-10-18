@@ -97,8 +97,16 @@
 //!   recovery key and unlock again. Never upload to a version this device
 //!   did not unlock.
 //!
-//! After a failed request, back off before the next pass: a request the
-//! core keeps (secrets, backup batch, own to-device) comes back every pass.
+//! After a failed request, back off before the next pass: a library
+//! request (key query, claim, backup batch) comes back every pass. The
+//! core's own requests (verification messages, key request cancellations,
+//! secret uploads, full-mailbox retries) come back only after an
+//! exponential delay (`Timing::own_retry_ms`, 1 s doubled per failure, at
+//! most 15 min; [`wakeup_in_ms`] says when). Pass the real status: after
+//! three permanent refusals (4xx other than 401, 408, 429; 0 = no
+//! response) such a request is dropped and [`mark_request_failed`] returns
+//! `RequestRejected` once — show a "sync problem" notice; `debug_report`
+//! lists it (review O-2). So a pass loop always ends.
 //!
 //! ## Key export to a file (CR-21)
 //!

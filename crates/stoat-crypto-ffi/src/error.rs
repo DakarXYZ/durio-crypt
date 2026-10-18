@@ -75,6 +75,9 @@ pub enum CryptoError {
     /// The key file does not open with this passphrase (or was modified)
     #[error("{0}")]
     WrongPassphrase(String),
+    /// A request of the core was refused for good and dropped (review O-2)
+    #[error("{0}")]
+    RequestRejected(String),
     #[error("{0}")]
     Internal(String),
     /// Input from the host is malformed (not UTF-8, wrong length)
@@ -131,6 +134,7 @@ impl From<Core> for CryptoError {
             Core::PassphraseRequired => Self::PassphraseRequired(m),
             Core::InvalidKeyFile => Self::InvalidKeyFile(m),
             Core::WrongPassphrase => Self::WrongPassphrase(m),
+            Core::RequestRejected => Self::RequestRejected(m),
             Core::Internal(_) => Self::Internal(m),
         }
     }

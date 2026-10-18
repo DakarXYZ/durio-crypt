@@ -86,6 +86,12 @@ pub enum CryptoError {
     /// The key file does not open with this passphrase (or was modified)
     #[error("wrong passphrase for the key file")]
     WrongPassphrase,
+    /// The server refused a request of the core itself (verification
+    /// message, key request cancellation, secret upload) for good: it was
+    /// dropped after repeated 4xx (review O-2). Show "sync problem, try
+    /// again"; `debug_report` lists it.
+    #[error("the server keeps refusing a request; it was dropped")]
+    RequestRejected,
     /// Unexpected library failure in an operation
     #[error("internal crypto error during {0}")]
     Internal(&'static str),
@@ -120,6 +126,7 @@ impl CryptoError {
             Self::PassphraseRequired => "passphrase_required",
             Self::InvalidKeyFile => "invalid_key_file",
             Self::WrongPassphrase => "wrong_passphrase",
+            Self::RequestRejected => "request_rejected",
             Self::Internal(_) => "internal",
         }
     }

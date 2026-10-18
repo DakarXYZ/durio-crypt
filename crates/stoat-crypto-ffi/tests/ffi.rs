@@ -38,6 +38,7 @@ impl Client {
             key_request_delay_ms: 0,
             to_device_retry_ms: 60_000,
             to_device_retry_attempts: 8,
+            own_retry_ms: 0,
         })
         .await
         .unwrap();

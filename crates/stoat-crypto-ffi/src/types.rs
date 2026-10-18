@@ -101,6 +101,10 @@ pub struct Timing {
     pub key_request_delay_ms: u64,
     pub to_device_retry_ms: u64,
     pub to_device_retry_attempts: u32,
+    /// First delay after a failed own request, doubled per failure
+    /// (review O-2; Kotlin default 1 s)
+    #[uniffi(default = 1000)]
+    pub own_retry_ms: u64,
 }
 
 impl From<Timing> for sc::Timing {
@@ -109,6 +113,7 @@ impl From<Timing> for sc::Timing {
             key_request_delay_ms: t.key_request_delay_ms,
             to_device_retry_ms: t.to_device_retry_ms,
             to_device_retry_attempts: t.to_device_retry_attempts,
+            own_retry_ms: t.own_retry_ms,
         }
     }
 }
@@ -119,6 +124,7 @@ impl From<sc::Timing> for Timing {
             key_request_delay_ms: t.key_request_delay_ms,
             to_device_retry_ms: t.to_device_retry_ms,
             to_device_retry_attempts: t.to_device_retry_attempts,
+            own_retry_ms: t.own_retry_ms,
         }
     }
 }

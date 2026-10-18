@@ -14,9 +14,16 @@
 //! * **retries** — devices refused for a full mailbox (`failed`) get the same
 //!   content again with a new transaction id, with exponential backoff, at
 //!   most [`Timing::to_device_retry_attempts`] times; then they are reported
-//!   by `undelivered_devices`. Pending retries survive restarts (store).
+//!   by `undelivered_devices`. Pending retries survive restarts (store);
+//! * **own requests** (verification messages, key request cancellations,
+//!   secret uploads) that fail come back after an exponential delay
+//!   ([`Timing::own_retry_ms`], doubled per failure, at most
+//!   [`OWN_BACKOFF_CAP_MS`]) instead of on every pass; after
+//!   [`OWN_MAX_REJECTIONS`] permanent refusals (4xx other than 401, 408,
+//!   429) the request is dropped and reported (review O-2). A retry of a
+//!   full mailbox refused that way gives its devices up the same way.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use crate::batch::{self, ServerLimits};
 use crate::requests::{self, OutgoingRequest, RequestKind};
@@ -34,6 +41,25 @@ const MAX_HANDED: usize = 4_096;
 /// Bound on retries and on devices given up on
 const MAX_RETRIES: usize = 256;
 const MAX_GAVE_UP: usize = 64;
+/// Permanent refusals of an own request before it is dropped (review O-2)
+pub const OWN_MAX_REJECTIONS: u32 = 3;
+/// Longest delay between two attempts of an own request
+pub const OWN_BACKOFF_CAP_MS: u64 = 15 * 60_000;
+/// Dropped requests remembered for `debug_report`
+const MAX_REJECTED: usize = 32;
+
+/// A refusal the server will repeat: client errors except authentication
+/// (the host renews it), timeouts and rate limits. 0 = no response.
+pub(crate) fn is_permanent(status: u16) -> bool {
+    (400..500).contains(&status) && !matches!(status, 401 | 408 | 429)
+}
+
+/// Delay before attempt `failures + 1`
+fn own_backoff(base_ms: u64, failures: u32) -> u64 {
+    base_ms
+        .saturating_mul(1u64 << failures.saturating_sub(1).min(20))
+        .min(OWN_BACKOFF_CAP_MS)
+}
 
 /// Key of the persisted retries
 pub(crate) const KV_RETRIES: &str = "stoat.outbox.retries.v1";
@@ -49,6 +75,9 @@ pub struct Timing {
     pub to_device_retry_ms: u64,
     /// Attempts before the device is reported as undelivered
     pub to_device_retry_attempts: u32,
+    /// First delay after a failed own request (verification, cancellation,
+    /// secret upload), doubled after each failure (review O-2)
+    pub own_retry_ms: u64,
 }
 
 impl Default for Timing {
@@ -58,6 +87,7 @@ impl Default for Timing {
             to_device_retry_ms: 60_000,
             // 1 + 2 + … + 128 min ≈ 4 h
             to_device_retry_attempts: 8,
+            own_retry_ms: 1_000,
         }
     }
 }
@@ -83,6 +113,9 @@ struct Retry {
     body: String,
     attempts: u32,
     due_ms: u64,
+    /// Permanent HTTP refusals of this retry (review O-2)
+    #[serde(default)]
+    rejections: u32,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -125,9 +158,37 @@ pub(crate) struct Outbox {
     part_of: HashMap<String, String>,
     /// To-device bodies handed out, for re-sending to `failed` devices
     handed: HashMap<String, String>,
-    /// Our own to-device requests (key request cancellations)
-    own: HashMap<String, OutgoingRequest>,
+    /// Our own requests (verification, key request cancellations, secret
+    /// uploads) and their failures
+    own: HashMap<String, Own>,
+    /// Own requests and retries dropped after permanent refusals
+    rejected: VecDeque<Rejected>,
     pub(crate) retries: Retries,
+}
+
+#[derive(Debug)]
+struct Own {
+    request: OutgoingRequest,
+    failures: u32,
+    rejections: u32,
+    due_ms: u64,
+}
+
+/// A request of the core the server kept refusing (review O-2)
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Rejected {
+    pub(crate) kind: RequestKind,
+    pub(crate) status: u16,
+    pub(crate) attempts: u32,
+}
+
+/// What a failure of an own request leads to
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum OwnFailure {
+    /// Comes back after the backoff
+    Later,
+    /// Dropped: the server refused it [`OWN_MAX_REJECTIONS`] times
+    Dropped(RequestKind),
 }
 
 fn to_device(id: String, body: String) -> OutgoingRequest {
@@ -184,7 +245,15 @@ impl Outbox {
     }
 
     pub(crate) fn add_own(&mut self, r: OutgoingRequest) {
-        self.own.insert(r.id.clone(), r);
+        self.own.insert(
+            r.id.clone(),
+            Own {
+                request: r,
+                failures: 0,
+                rejections: 0,
+                due_ms: 0,
+            },
+        );
     }
 
     /// Requests as the client must send them: parts instead of oversized
@@ -246,8 +315,13 @@ impl Outbox {
 
     /// Our own requests and the retries that are due
     pub(crate) fn own_and_due(&mut self) -> Vec<OutgoingRequest> {
-        let mut out: Vec<OutgoingRequest> = self.own.values().cloned().collect();
         let now = now_ms();
+        let mut out: Vec<OutgoingRequest> = self
+            .own
+            .values()
+            .filter(|o| o.due_ms <= now)
+            .map(|o| o.request.clone())
+            .collect();
         out.extend(
             self.retries
                 .pending
@@ -262,7 +336,38 @@ impl Outbox {
     }
 
     pub(crate) fn next_retry_ms(&self) -> Option<u64> {
-        self.retries.pending.iter().map(|r| r.due_ms).min()
+        let own = self.own.values().filter(|o| o.failures > 0).map(|o| o.due_ms);
+        self.retries.pending.iter().map(|r| r.due_ms).chain(own).min()
+    }
+
+    /// An own request failed with `status`: back off, or drop it after
+    /// [`OWN_MAX_REJECTIONS`] permanent refusals
+    pub(crate) fn own_failed(&mut self, id: &str, status: u16) -> OwnFailure {
+        let base = self.timing.own_retry_ms;
+        let Some(o) = self.own.get_mut(id) else {
+            return OwnFailure::Later;
+        };
+        o.failures += 1;
+        if is_permanent(status) {
+            o.rejections += 1;
+        }
+        if o.rejections >= OWN_MAX_REJECTIONS {
+            let kind = o.request.kind;
+            let attempts = o.failures;
+            self.own.remove(id);
+            self.handed.remove(id);
+            self.reject(kind, status, attempts);
+            return OwnFailure::Dropped(kind);
+        }
+        o.due_ms = now_ms().saturating_add(own_backoff(base, o.failures));
+        OwnFailure::Later
+    }
+
+    fn reject(&mut self, kind: RequestKind, status: u16, attempts: u32) {
+        if self.rejected.len() >= MAX_REJECTED {
+            self.rejected.pop_front();
+        }
+        self.rejected.push_back(Rejected { kind, status, attempts });
     }
 
     pub(crate) fn is_own(&self, id: &str) -> bool {
@@ -325,19 +430,39 @@ impl Outbox {
             body,
             attempts,
             due_ms: now_ms().saturating_add(backoff),
+            rejections: 0,
         });
         let excess = self.retries.pending.len().saturating_sub(MAX_RETRIES);
         self.retries.pending.drain(..excess);
         true
     }
 
-    /// A retry failed at the HTTP level: try again after the base delay
-    pub(crate) fn retry_failed(&mut self, id: &str) {
+    /// A retry failed at the HTTP level: try again after the base delay;
+    /// refused permanently [`OWN_MAX_REJECTIONS`] times, its devices are
+    /// given up. Returns true if the retries changed (persist them).
+    pub(crate) fn retry_failed(&mut self, id: &str, status: u16) -> bool {
         let delay = self.timing.to_device_retry_ms;
-        if let Some(r) = self.retries.pending.iter_mut().find(|r| r.id == id) {
-            r.due_ms = now_ms().saturating_add(delay);
-        }
         self.handed.remove(id);
+        let Some(i) = self.retries.pending.iter().position(|r| r.id == id) else {
+            return false;
+        };
+        let r = &mut self.retries.pending[i];
+        r.due_ms = now_ms().saturating_add(delay);
+        if is_permanent(status) {
+            r.rejections += 1;
+        }
+        if r.rejections < OWN_MAX_REJECTIONS {
+            return r.rejections > 0;
+        }
+        let r = self.retries.pending.remove(i);
+        for (u, d) in batch::recipients(&r.body) {
+            self.retries.gave_up.retain(|(gu, gd, _)| !(gu == &u && gd == &d));
+            self.retries.gave_up.push((u, d, r.attempts));
+        }
+        let excess = self.retries.gave_up.len().saturating_sub(MAX_GAVE_UP);
+        self.retries.gave_up.drain(..excess);
+        self.reject(RequestKind::ToDevice, status, r.attempts);
+        true
     }
 
     pub(crate) fn own_done(&mut self, id: &str) {
@@ -385,6 +510,10 @@ impl Outbox {
             "claim_in_flight": self.claim.is_some(),
             "split_requests": self.splits.len(),
             "own": self.own.len(),
+            "own_backing_off": self.own.values().filter(|o| o.failures > 0).count(),
+            "rejected": self.rejected.iter()
+                .map(|r| serde_json::json!({ "kind": r.kind.as_str(), "status": r.status, "attempts": r.attempts }))
+                .collect::<Vec<_>>(),
             "retries_pending": self.retries.pending.len(),
             "retry_attempts_max": self.retries.pending.iter().map(|r| r.attempts).max().unwrap_or(0),
             "devices_given_up": self.retries.gave_up.len(),
@@ -508,5 +637,67 @@ mod tests {
         ob.expand(td("U", &["D2"]));
         assert!(ob.delivered("U", "{}"));
         assert!(ob.undelivered().is_empty());
+    }
+
+    /// O-2: own requests back off on any failure; only permanent refusals
+    /// count towards dropping them
+    #[test]
+    fn own_requests_back_off_then_are_dropped() {
+        let mut ob = Outbox::default();
+        ob.add_own(td("V", &["D1"]));
+        assert_eq!(ob.own_and_due().len(), 1);
+        // a server error: later, not on the next pass
+        assert_eq!(ob.own_failed("V", 503), OwnFailure::Later);
+        assert!(ob.own_and_due().is_empty());
+        let wait = ob.next_retry_ms().unwrap().saturating_sub(now_ms());
+        assert!((1..=1_000).contains(&wait), "{wait}");
+        // rate limits, timeouts, auth and no response never drop it
+        for status in [401, 408, 429, 0, 500] {
+            assert_eq!(ob.own_failed("V", status), OwnFailure::Later);
+        }
+        assert!(ob.is_own("V"));
+        // the delay doubles up to the cap
+        assert_eq!(own_backoff(1_000, 1), 1_000);
+        assert_eq!(own_backoff(1_000, 4), 8_000);
+        assert_eq!(own_backoff(1_000, 60), OWN_BACKOFF_CAP_MS);
+        assert_eq!(own_backoff(0, 9), 0);
+
+        // permanent refusals: dropped on the third, reported
+        assert_eq!(ob.own_failed("V", 400), OwnFailure::Later);
+        assert_eq!(ob.own_failed("V", 404), OwnFailure::Later);
+        assert_eq!(ob.own_failed("V", 400), OwnFailure::Dropped(RequestKind::ToDevice));
+        assert!(!ob.is_own("V") && ob.own_and_due().is_empty());
+        assert_eq!(
+            ob.rejected.iter().collect::<Vec<_>>(),
+            [&Rejected {
+                kind: RequestKind::ToDevice,
+                status: 400,
+                attempts: 9
+            }]
+        );
+        assert_eq!(ob.stats()["rejected"][0]["kind"], "to_device");
+        assert!(!(500..600).any(is_permanent) && is_permanent(403) && !is_permanent(429));
+    }
+
+    /// O-2: a full-mailbox retry refused for good gives its devices up
+    #[test]
+    fn retries_refused_for_good_give_up_their_devices() {
+        let mut ob = Outbox {
+            timing: Timing {
+                to_device_retry_ms: 0,
+                ..Timing::default()
+            },
+            ..Outbox::default()
+        };
+        ob.expand(td("T", &["D1", "D2"]));
+        assert!(ob.delivered("T", r#"{"failed":{"@u:stoat.invalid":["D2"]}}"#));
+        let id = ob.own_and_due()[0].id.clone();
+        assert!(!ob.retry_failed(&id, 502), "a server error changes nothing persisted");
+        assert!(ob.retry_failed(&id, 400));
+        assert!(ob.retry_failed(&id, 400));
+        assert!(ob.retry_failed(&id, 400));
+        assert!(!ob.is_retry(&id));
+        assert_eq!(ob.undelivered(), [("@u:stoat.invalid".into(), "D2".into(), 1, true)]);
+        assert_eq!(ob.rejected.len(), 1);
     }
 }

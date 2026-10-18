@@ -92,8 +92,10 @@ impl CryptoMachine {
         run(async move { Ok(m.mark_request_sent(&id, kind.into(), &body).await?) }).await
     }
 
-    /// Non-2xx (or no response): `MfaRequired`, `BackupVersionChanged` and
-    /// `DeviceKeysConflict` need the UI; other failures come back later
+    /// Non-2xx (`status` 0: no response): `MfaRequired`,
+    /// `BackupVersionChanged`, `DeviceKeysConflict` and `RequestRejected` (a
+    /// request of the core refused for good and dropped) need the UI; other
+    /// failures come back later
     pub async fn mark_request_failed(&self, id: String, kind: RequestKind, status: u16) -> Result<(), CryptoError> {
         let m = self.core();
         run(async move { Ok(m.mark_request_failed(&id, kind.into(), status).await?) }).await
