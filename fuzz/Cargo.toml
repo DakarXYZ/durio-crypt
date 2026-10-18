@@ -1,0 +1,40 @@
+# Fuzzing of the wire parsers (CR-16). A separate workspace: cargo-fuzz needs
+# nightly, the main workspace stays on the pinned stable toolchain.
+#   cd fuzz && cargo +nightly fuzz run envelope
+[workspace]
+
+[package]
+name = "stoat-crypto-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+serde_json = "1"
+stoat-crypto-proto = { path = "../crates/stoat-crypto-proto" }
+
+[[bin]]
+name = "envelope"
+path = "fuzz_targets/envelope.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "payload"
+path = "fuzz_targets/payload.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "api"
+path = "fuzz_targets/api.rs"
+test = false
+doc = false
+bench = false

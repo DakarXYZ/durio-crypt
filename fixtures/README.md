@@ -22,3 +22,15 @@
 
 Идентификаторы в телах `/e2ee/*` — Matrix-форма C15 (`@{lower(ulid)}:stoat.invalid`), `device_id` — ULID сессии.
 В WS-событиях (это события Stoat) пользователи — ULID как есть. Расхождения с планом — `docs/spike-report.md`, §5.
+
+## После спайка (этап 3A)
+
+- Источник истины — эта папка. `api/` и `envelope/` побайтно скопированы в бэкенд
+  (`stoatchat/crates/core/models/tests/fixtures/e2ee/`); хеши — `SHA256SUMS`, сверка —
+  `scripts/fixtures-digest.sh --check` (CI) и `--backend <путь к stoatchat>`.
+- Типы и проверки — крейт `stoat-crypto-proto`, тест `crates/stoat-crypto-proto/tests/fixtures.rs` (круговой
+  разбор каждого файла).
+- `ws/E2eeToDevice.json`: `sender` исправлен на Matrix-форму (`@…:stoat.invalid`) — так его шлёт бэкенд
+  (`to_device_send.rs`); в спайке там был ULID. `E2eeDeviceListUpdate.user` — ULID (событие Stoat).
+- Ответ `keys/upload` у бэкенда содержит ещё `device_unused_fallback_key_types` (в фикстуре его нет — файл
+  не меняем, чтобы не расходиться с копией бэкенда; поле проверяется тестом `upload_response_with_fallback_types`).
