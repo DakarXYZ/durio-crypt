@@ -2,11 +2,15 @@
 # CR-15: a live dur.io backend for the testkit, in Docker, from the stoatchat
 # checkout next to this repo (workspace layout; STOATCHAT_DIR to override).
 #
-#   scripts/testkit-backend.sh up      # infra (mongo rs0, redis, rabbitmq, MinIO) + debug builds of
-#                                      # delta, bonfire, autumn, each in its own container on durio-test
-#   scripts/testkit-backend.sh test    # the testkit against it (JUnit XML: out/testkit/junit.xml)
+#   scripts/testkit-backend.sh up      # infra (mongo rs0, redis, rabbitmq + management API, MinIO) + debug
+#                                      # builds of delta, bonfire, autumn, pushd, each in its own container
+#                                      # on durio-test; plus server 2 for T14 (own mongo, redis, rabbit,
+#                                      # delta2, bonfire2; TESTKIT_SECOND=0 skips it)
+#   scripts/testkit-backend.sh test    # the scenarios (JUnit XML: out/testkit/junit-testkit.xml)
 #   scripts/testkit-backend.sh check   # Mongo/MinIO hold ciphertext only (evidence from the last test run)
-#   scripts/testkit-backend.sh down    # stop the services and MinIO (infra: tools/rust-dev/test-env.sh down)
+#   scripts/testkit-backend.sh load    # the load scenario (STOAT_LOAD_USERS, default 50; out/testkit/load.json)
+#   scripts/testkit-backend.sh chaos   # chaos scenarios: the test asks, this script stops/restarts containers
+#   scripts/testkit-backend.sh down    # services, MinIO, server 2 (infra: tools/rust-dev/test-env.sh down)
 #
 # Config only through REVOLT__* env vars: E2EE on, open registration without
 # e-mail verification or captcha. Rate limits stay on (the testkit backs off on 429).
@@ -22,17 +26,24 @@ MINIO_IMAGE=pgsty/silo:RELEASE.2026-09-16T00-00-00Z
 MC_IMAGE=pgsty/mc:RELEASE.2026-09-16T00-00-00Z
 S3_USER=minioautumn
 S3_PASS=minioautumn
-SERVICES="delta bonfire autumn"
+SERVICES="delta bonfire autumn pushd"
+SECOND="mongo2 redis2 rabbit2 delta2 bonfire2"
+RABBIT_API=http://rabbituser:rabbitpass@durio-test-rabbit:15672
 winpath() { (cd "$1" && (pwd -W 2>/dev/null || pwd)); }
+running() { [ "$(docker container inspect -f '{{.State.Running}}' "$1" 2>/dev/null)" = true ]; }
 
+# $1: "" for server 1, "2" for server 2 (T14: its own mongo, redis, rabbit)
 revolt_env() {
+    n=${1:-}
+    rs=rs0
+    [ -z "$n" ] || rs=rs1
     cat <<EOF
-REVOLT__DATABASE__MONGODB=mongodb://durio-test-mongo/?replicaSet=rs0
-REVOLT__DATABASE__REDIS=redis://durio-test-redis/
-REVOLT__RABBIT__HOST=durio-test-rabbit
-REVOLT__HOSTS__APP=http://durio-test-delta:14702
-REVOLT__HOSTS__API=http://durio-test-delta:14702
-REVOLT__HOSTS__EVENTS=ws://durio-test-bonfire:14703
+REVOLT__DATABASE__MONGODB=mongodb://durio-test-mongo$n/?replicaSet=$rs
+REVOLT__DATABASE__REDIS=redis://durio-test-redis$n/
+REVOLT__RABBIT__HOST=durio-test-rabbit$n
+REVOLT__HOSTS__APP=http://durio-test-delta$n:14702
+REVOLT__HOSTS__API=http://durio-test-delta$n:14702
+REVOLT__HOSTS__EVENTS=ws://durio-test-bonfire$n:14703
 REVOLT__HOSTS__AUTUMN=http://durio-test-autumn:14704
 REVOLT__HOSTS__JANUARY=http://durio-test-january:14705
 REVOLT__FEATURES__E2EE__ENABLED=true
@@ -48,20 +59,45 @@ REVOLT__FILES__S3__REGION=minio
 REVOLT__FILES__S3__ACCESS_KEY_ID=$S3_USER
 REVOLT__FILES__S3__SECRET_ACCESS_KEY=$S3_PASS
 REVOLT__FILES__S3__DEFAULT_BUCKET=revolt-uploads
+# T11: pushd publishes to notifications.outbound.fcm; without FCM credentials
+# nothing consumes it, the testkit binds its own queue (RabbitMQ management API)
+REVOLT__PUSHD__PRODUCTION=false
 RUST_LOG=warn
 EOF
 }
 
+# $1: "" or "2"; the rest: services. No --rm: chaos stops and starts them.
+start_services() {
+    n=$1
+    shift
+    mkdir -p out && env_file=out/testkit-backend$n.env  # docker.exe cannot read Git Bash /tmp
+    revolt_env "$n" > "$env_file"
+    for s in "$@"; do
+        docker rm -f durio-test-$s$n >/dev/null 2>&1 || true
+        MSYS_NO_PATHCONV=1 docker run -d --name durio-test-$s$n --network $NET --memory 1g --env-file "$env_file" \
+            -v durio-cargo-target:/target:ro -w / $IMAGE /target/debug/revolt-$s >/dev/null
+    done
+    rm -f "$env_file"
+}
+
+wait_delta() {
+    i=0
+    until docker run --rm --network $NET alpine:3.22 wget -qO- "http://$1:14702/" 2>/dev/null | grep -q '"e2ee"'; do
+        i=$((i + 1)); [ $i -lt 120 ] || { docker logs "$1" 2>&1 | tail -20 >&2; exit 1; }
+        sleep 1
+    done
+}
+
 up() {
     docker container inspect durio-test-mongo >/dev/null 2>&1 || sh "$TEST_ENV" up
-    echo "building revolt-delta, revolt-bonfire, revolt-autumn (debug)"
+    echo "building revolt-delta, revolt-bonfire, revolt-autumn, revolt-pushd (debug)"
     MSYS_NO_PATHCONV=1 docker run --rm -v "$(winpath "$STOATCHAT_DIR"):/src" \
         -v durio-cargo-target:/target -v durio-cargo-registry:/usr/local/cargo/registry \
-        -w /src -e CARGO_TARGET_DIR=/target -e CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-6}" \
-        $IMAGE cargo build -q -p revolt-delta -p revolt-bonfire -p revolt-autumn
+        -w /src -e CARGO_TARGET_DIR=/target -e CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-4}" \
+        $IMAGE cargo build -q -p revolt-delta -p revolt-bonfire -p revolt-autumn -p revolt-pushd
 
     if ! docker container inspect durio-test-minio >/dev/null 2>&1; then
-        docker run -d --rm --name durio-test-minio --network $NET \
+        docker run -d --rm --name durio-test-minio --network $NET --memory 512m \
             -e MINIO_ROOT_USER=$S3_USER -e MINIO_ROOT_PASSWORD=$S3_PASS $MINIO_IMAGE server /data >/dev/null
     fi
     i=0
@@ -70,32 +106,115 @@ up() {
         i=$((i + 1)); [ $i -lt 30 ] || { echo "minio did not start" >&2; exit 1; }
         sleep 1
     done
+    # T11: the test consumer reads the outbound push routing key over HTTP
+    docker exec durio-test-rabbit rabbitmq-plugins enable --quiet rabbitmq_management >/dev/null
 
-    mkdir -p out && env_file=out/testkit-backend.env  # docker.exe cannot read Git Bash /tmp
-    revolt_env > "$env_file"
-    for s in $SERVICES; do
-        docker rm -f durio-test-$s >/dev/null 2>&1 || true
-        MSYS_NO_PATHCONV=1 docker run -d --rm --name durio-test-$s --network $NET --env-file "$env_file" \
-            -v durio-cargo-target:/target:ro -w / $IMAGE /target/debug/revolt-$s >/dev/null
-    done
-    rm -f "$env_file"
-    i=0
-    until docker run --rm --network $NET alpine:3.22 wget -qO- http://durio-test-delta:14702/ 2>/dev/null | grep -q '"e2ee"'; do
-        i=$((i + 1)); [ $i -lt 120 ] || { docker logs durio-test-delta | tail -20 >&2; exit 1; }
-        sleep 1
-    done
-    for s in bonfire autumn; do
-        docker container inspect durio-test-$s >/dev/null 2>&1 || { echo "$s exited" >&2; exit 1; }
+    start_services "" $SERVICES
+    wait_delta durio-test-delta
+    [ "${TESTKIT_SECOND:-1}" = 0 ] || up_second
+    for s in bonfire autumn pushd; do
+        running durio-test-$s || { docker logs durio-test-$s 2>&1 | tail -20 >&2; echo "$s exited" >&2; exit 1; }
     done
     echo "backend up: http://durio-test-delta:14702 ws://durio-test-bonfire:14703 http://durio-test-autumn:14704 (network $NET)"
 }
 
+# T14: a second backend with its own database, cache and broker
+up_second() {
+    if ! running durio-test-mongo2; then
+        docker rm -f durio-test-mongo2 durio-test-redis2 durio-test-rabbit2 >/dev/null 2>&1 || true
+        docker run -d --name durio-test-mongo2 --network $NET --memory 768m mongo:8 \
+            --replSet rs1 --bind_ip_all --wiredTigerCacheSizeGB 0.25 >/dev/null
+        docker run -d --name durio-test-redis2 --network $NET --memory 128m redis:7-alpine >/dev/null
+        docker run -d --name durio-test-rabbit2 --network $NET --memory 512m \
+            -e RABBITMQ_DEFAULT_USER=rabbituser -e RABBITMQ_DEFAULT_PASS=rabbitpass rabbitmq:4-alpine >/dev/null
+        i=0
+        until docker exec durio-test-mongo2 mongosh --quiet --eval \
+            'try { rs.status().ok } catch (e) { rs.initiate({_id: "rs1", members: [{_id: 0, host: "durio-test-mongo2:27017"}]}).ok }' \
+            2>/dev/null | grep -q 1; do
+            i=$((i + 1)); [ $i -lt 60 ] || { echo "mongo2 did not start" >&2; exit 1; }
+            sleep 1
+        done
+        i=0
+        until docker exec durio-test-rabbit2 rabbitmq-diagnostics -q check_running >/dev/null 2>&1; do
+            i=$((i + 1)); [ $i -lt 60 ] || { echo "rabbit2 did not start" >&2; exit 1; }
+            sleep 1
+        done
+        docker exec durio-test-rabbit2 rabbitmqctl eval 'rabbit_exchange:declare(rabbit_misc:r(<<"/">>, exchange,
+            <<"revolt.default">>), topic, true, false, false, [], <<"rabbituser">>).' >/dev/null
+    fi
+    start_services 2 delta bonfire
+    wait_delta durio-test-delta2
+    echo "server 2 up: http://durio-test-delta2:14702 ws://durio-test-bonfire2:14703"
+}
+
+stack_env() {
+    e="--network $NET -e STOAT_API=http://durio-test-delta:14702 -e STOAT_WS=ws://durio-test-bonfire:14703"
+    e="$e -e STOAT_AUTUMN=http://durio-test-autumn:14704 -e STOAT_TESTKIT_OUT=/work/out/testkit -e STOAT_RABBIT_API=$RABBIT_API"
+    if running durio-test-delta2; then
+        e="$e -e STOAT_API2=http://durio-test-delta2:14702 -e STOAT_WS2=ws://durio-test-bonfire2:14703"
+    fi
+    echo "$e"
+}
+
+# $1: nextest filter expression, $2: profile
+nextest_cmd() {
+    cat <<EOF
+command -v cargo-nextest >/dev/null || curl -LsSf https://get.nexte.st/0.9/linux | tar zxf - -C /tools/bin
+cargo nextest run --locked -p stoat-crypto-testkit --profile $2 --run-ignored only -E '$1'; rc=\$?
+cp target/nextest/$2/junit.xml out/testkit/junit-$2.xml 2>/dev/null
+exit \$rc
+EOF
+}
+
 run_test() {
     mkdir -p out/testkit
-    DCARGO_DOCKER_ARGS="--network $NET -e STOAT_API=http://durio-test-delta:14702 -e STOAT_WS=ws://durio-test-bonfire:14703 -e STOAT_AUTUMN=http://durio-test-autumn:14704 -e STOAT_TESTKIT_OUT=/work/out/testkit" \
-        scripts/dcargo.sh sh -c 'command -v cargo-nextest >/dev/null || curl -LsSf https://get.nexte.st/0.9/linux | tar zxf - -C /tools/bin;
-            cargo nextest run --locked -p stoat-crypto-testkit --profile testkit --run-ignored only; rc=$?;
-            cp target/nextest/testkit/junit.xml out/testkit/ 2>/dev/null; exit $rc'
+    DCARGO_DOCKER_ARGS="$(stack_env)" scripts/dcargo.sh sh -c "$(nextest_cmd 'not test(/^(load|chaos)_/)' testkit)"
+}
+
+run_load() {
+    mkdir -p out/testkit
+    DCARGO_DOCKER_ARGS="$(stack_env) -e STOAT_LOAD=1 -e STOAT_LOAD_USERS=${STOAT_LOAD_USERS:-50}" \
+        scripts/dcargo.sh sh -c "$(nextest_cmd 'test(/^load_/)' testkit-serial)"
+    for s in $SERVICES; do
+        printf '%s: %s ERROR/panic lines in the log\n' "$s" \
+            "$(docker logs durio-test-$s 2>&1 | grep -ciE ' ERROR |panicked' || true)"
+    done
+}
+
+# The test writes out/testkit/chaos/<n>.req ("restart redis", "stop delta",
+# "start delta"); this loop runs it and renames it to <n>.done. Targets:
+# redis, rabbit (infra), delta, bonfire, autumn, pushd (services).
+run_chaos() {
+    dir=out/testkit/chaos
+    rm -rf "$dir" && mkdir -p "$dir"
+    name=durio-testkit-chaos
+    docker rm -f $name >/dev/null 2>&1 || true
+    DCARGO_DOCKER_ARGS="-d --name $name $(stack_env) -e STOAT_CHAOS_DIR=/work/$dir" \
+        scripts/dcargo.sh sh -c "$(nextest_cmd 'test(/^chaos_/)' testkit-serial)" >/dev/null
+    docker logs -f $name &
+    logs=$!
+    while running $name; do
+        for req in "$dir"/*.req; do
+            [ -e "$req" ] || continue
+            read -r action target < "$req" || true
+            echo "chaos: $action $target" >&2
+            docker "$action" durio-test-"$target" >/dev/null 2>&1 || echo "chaos: $action $target failed" >&2
+            if [ "$action" != stop ]; then
+                case $target in
+                delta) wait_delta durio-test-delta ;;
+                rabbit) until docker exec durio-test-rabbit rabbitmq-diagnostics -q check_running >/dev/null 2>&1; do sleep 1; done ;;
+                esac
+            fi
+            mv "$req" "${req%.req}.done"
+        done
+        sleep 0.3
+    done
+    rc=$(docker wait $name 2>/dev/null || echo 1)
+    wait $logs 2>/dev/null || true
+    docker rm -f $name >/dev/null 2>&1 || true
+    # leave the stack as the scenarios found it
+    for s in redis rabbit $SERVICES; do running durio-test-$s || docker start durio-test-$s >/dev/null; done
+    return "$rc"
 }
 
 check() {
@@ -143,14 +262,16 @@ check() {
 }
 
 down() {
-    for s in $SERVICES minio; do docker rm -f durio-test-$s >/dev/null 2>&1 || true; done
+    for s in $SERVICES minio $SECOND; do docker rm -f durio-test-$s >/dev/null 2>&1 || true; done
     echo "testkit backend down (infra: $TEST_ENV down)"
 }
 
 case ${1:-} in
 up) up ;;
 test) run_test ;;
+load) run_load ;;
+chaos) run_chaos ;;
 check) check ;;
 down) down ;;
-*) sed -n '2,12p' "$0"; exit 2 ;;
+*) sed -n '2,16p' "$0"; exit 2 ;;
 esac

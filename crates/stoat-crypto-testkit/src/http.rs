@@ -1,10 +1,12 @@
 //! HTTP to the backend: JSON in, status + body out; 429 is waited out.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rand::Rng;
 use reqwest::{Method, RequestBuilder};
 use serde_json::Value;
+
+use crate::metrics;
 
 #[derive(Debug, thiserror::Error)]
 pub enum HttpError {
@@ -56,6 +58,7 @@ impl Http {
         Self {
             client: reqwest::Client::builder()
                 .timeout(Duration::from_secs(60))
+                .connect_timeout(Duration::from_secs(5))
                 .build()
                 .unwrap_or_default(),
             base: base.trim_end_matches('/').to_owned(),
@@ -112,9 +115,21 @@ impl Http {
             if let Some(body) = body {
                 b = b.header("content-type", "application/json").body(body.to_owned());
             }
-            let resp = b.send().await?;
-            let status = resp.status().as_u16();
-            let text = resp.text().await?;
+            let started = Instant::now();
+            let sent = async {
+                let resp = b.send().await?;
+                let status = resp.status().as_u16();
+                Ok::<_, reqwest::Error>((status, resp.text().await?))
+            }
+            .await;
+            let (status, text) = match sent {
+                Ok(r) => r,
+                Err(e) => {
+                    metrics::record(method, path, 0, started.elapsed());
+                    return Err(e.into());
+                }
+            };
+            metrics::record(method, path, status, started.elapsed());
             if status == 429 {
                 wait_rate_limit(&text).await;
                 continue;
@@ -156,9 +171,11 @@ impl Http {
         for _ in 0..MAX_RATE_LIMIT_WAITS {
             let part = reqwest::multipart::Part::bytes(bytes.clone()).file_name("blob");
             let form = reqwest::multipart::Form::new().part("file", part);
+            let started = Instant::now();
             let resp = self.build(&Method::POST, path, None).multipart(form).send().await?;
             let status = resp.status().as_u16();
             let text = resp.text().await?;
+            metrics::record("POST", path, status, started.elapsed());
             match status {
                 429 => wait_rate_limit(&text).await,
                 200..=299 => return Ok(serde_json::from_str(&text).unwrap_or(Value::Null)),

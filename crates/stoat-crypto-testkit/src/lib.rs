@@ -9,7 +9,14 @@
 //! scripts/testkit-backend.sh up     # delta + bonfire + autumn + infra in Docker
 //! scripts/testkit-backend.sh test   # cargo nextest … --run-ignored only (JUnit XML)
 //! scripts/testkit-backend.sh check  # Mongo / MinIO hold ciphertext only
+//! scripts/testkit-backend.sh load   # load scenario, numbers in out/testkit/load.json
+//! scripts/testkit-backend.sh chaos  # restarts of redis/rabbit/bonfire/delta mid-flow
 //! ```
+//!
+//! T1–T19 (plan 00, "test scenarios") all run live; T11 reads pushd's FCM
+//! payload from RabbitMQ (`rabbit`), T14 needs the second backend
+//! (`STOAT_API2`). Load and chaos scenarios skip unless `STOAT_LOAD` /
+//! `STOAT_CHAOS_DIR` are set (`docs/load-chaos.md`).
 //!
 //! Every scenario uses fresh users (no database cleanup). The backend keeps
 //! its rate limits: the client waits out a 429 (`retry_after`) and spreads
@@ -20,13 +27,16 @@
 //! (request passes, mailbox + ack, send loop) — the same a client implements.
 
 mod account;
+pub mod chaos;
 mod device;
 mod evidence;
 mod http;
+pub mod metrics;
+pub mod rabbit;
 mod ws;
 
 pub use account::{Account, Stack};
-pub use device::{Device, payload_text, settle, timing};
+pub use device::{Device, Persisted, payload_text, settle, timing};
 pub use evidence::Evidence;
 pub use http::{Http, HttpError, Reply};
 
@@ -46,12 +56,21 @@ pub struct Config {
 impl Config {
     /// `None` without `STOAT_API` (no live backend configured)
     pub fn from_env() -> Option<Self> {
-        let api = std::env::var("STOAT_API").ok()?;
+        Self::from_env_suffix("")
+    }
+
+    /// The second server of T14: `STOAT_API2`, `STOAT_WS2`
+    pub fn second_from_env() -> Option<Self> {
+        Self::from_env_suffix("2")
+    }
+
+    fn from_env_suffix(n: &str) -> Option<Self> {
+        let api = std::env::var(format!("STOAT_API{n}")).ok()?;
         let base = api.trim_end_matches('/').to_owned();
         let host = base.split("://").nth(1).unwrap_or(&base).to_owned();
         Some(Self {
-            ws: std::env::var("STOAT_WS").unwrap_or_else(|_| format!("ws://{host}/events")),
-            autumn: std::env::var("STOAT_AUTUMN").unwrap_or_else(|_| format!("{base}/autumn")),
+            ws: std::env::var(format!("STOAT_WS{n}")).unwrap_or_else(|_| format!("ws://{host}/events")),
+            autumn: std::env::var(format!("STOAT_AUTUMN{n}")).unwrap_or_else(|_| format!("{base}/autumn")),
             out: std::env::var("STOAT_TESTKIT_OUT").ok().map(Into::into),
             api: base,
         })

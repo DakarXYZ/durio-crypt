@@ -8,3 +8,13 @@ fail-fast = false
 [profile.testkit.junit]
 # target/nextest/testkit/junit.xml
 path = "junit.xml"
+
+# load and chaos (scripts/testkit-backend.sh load|chaos): one scenario at a
+# time, they measure the whole stack or restart parts of it
+[profile.testkit-serial]
+test-threads = 1
+slow-timeout = { period = "120s", terminate-after = 10 }
+fail-fast = false
+
+[profile.testkit-serial.junit]
+path = "junit.xml"

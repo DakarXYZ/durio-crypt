@@ -14,6 +14,7 @@ use stoat_crypto::{
     AttachmentEncryptor, AttachmentVerifier, CryptoError, DecryptError, RecoverySecrets, SasState, Trust, Verification,
     encrypt_attachment,
 };
+use stoat_crypto_testkit::rabbit::PushQueue;
 use stoat_crypto_testkit::{Device, Evidence, Stack, payload_text, settle};
 
 macro_rules! stack {
@@ -596,6 +597,619 @@ async fn t04_logout_cascade() {
         let mut ev = Evidence::default();
         ev.message(&ch, &m);
         ev.save(&s.config, "t04_logout_cascade");
+    })
+    .await;
+}
+
+/// T6: D joins a group of three: D reads what is sent after it joined, not
+/// what came before; the session does not rotate on a join (the newcomer
+/// gets the key from the current index)
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a live backend: scripts/testkit-backend.sh up && test"]
+async fn t06_member_added_reads_only_new() {
+    let s = stack!();
+    deadline(async {
+        let a = s.register("alice").await.unwrap();
+        let b = s.register("bob").await.unwrap();
+        let c = s.register("carol").await.unwrap();
+        let d = s.register("dave").await.unwrap();
+        for other in [&b, &c, &d] {
+            a.befriend(other).await.unwrap();
+        }
+        let g = a.encrypted_group("testkit", &[&b, &c]).await.unwrap();
+        let (mut da, mut db, mut dc) = (Device::open(&a).await, Device::open(&b).await, Device::open(&c).await);
+        for x in [&mut da, &mut db, &mut dc] {
+            x.refresh_members(&g).await;
+        }
+        let m = marker();
+        da.send_text(&g, &format!("{m} before")).await;
+        settle(&mut [&mut da, &mut db, &mut dc]).await;
+
+        a.add_member(&g, &d).await.unwrap();
+        let mut dd = Device::open(&d).await;
+        for x in [&mut da, &mut db, &mut dc, &mut dd] {
+            x.refresh_members(&g).await;
+        }
+        da.send_text(&g, &format!("{m} after")).await;
+        db.send_text(&g, &format!("{m} from bob")).await;
+        settle(&mut [&mut da, &mut db, &mut dc, &mut dd]).await;
+
+        let msgs = dd.messages(&g).await;
+        assert_eq!(msgs.len(), 3, "the newcomer sees the history (encrypted)");
+        assert_eq!(dd.decrypt(&msgs[0]).await.unwrap_err(), DecryptError::MissingRoomKey);
+        assert_eq!(dd.read(&msgs[1]).await, format!("{m} after"));
+        assert_eq!(dd.read(&msgs[2]).await, format!("{m} from bob"));
+        assert_eq!(
+            msgs[0]["encrypted"]["session_id"], msgs[1]["encrypted"]["session_id"],
+            "a join must not rotate"
+        );
+        // the old members still read everything
+        assert_eq!(dc.read_all(&g).await.len(), 3);
+        // nobody forwards old keys to another user (requests go to own verified devices only)
+        dd.sync().await;
+        assert_eq!(dd.decrypt(&msgs[0]).await.unwrap_err(), DecryptError::MissingRoomKey);
+        let mut ev = Evidence::default();
+        ev.message(&g, &m);
+        ev.save(&s.config, "t06_member_added_reads_only_new");
+    })
+    .await;
+}
+
+fn repost(env: &Value) -> Value {
+    json!({ "nonce": marker(), "encrypted": env })
+}
+
+/// T8/T16/T17 through the real API: what a malicious server (or a member)
+/// does with real envelopes is flagged — a replay under a new id, a move to
+/// another channel, a forged author, a rolled-back edit
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a live backend: scripts/testkit-backend.sh up && test"]
+async fn t08_t16_t17_server_tampering() {
+    let s = stack!();
+    deadline(async {
+        let a = s.register("alice").await.unwrap();
+        let b = s.register("bob").await.unwrap();
+        let c = s.register("carol").await.unwrap();
+        a.befriend(&b).await.unwrap();
+        a.befriend(&c).await.unwrap();
+        let dm = a.encrypted_dm(&b).await.unwrap();
+        let g = a.encrypted_group("testkit", &[&b, &c]).await.unwrap();
+        let (mut da, mut db, mut dc) = (Device::open(&a).await, Device::open(&b).await, Device::open(&c).await);
+        da.refresh_members(&dm).await;
+        db.refresh_members(&dm).await;
+        for x in [&mut da, &mut db, &mut dc] {
+            x.refresh_members(&g).await;
+        }
+        let m = marker();
+        let id = da.send_text(&dm, &format!("{m} original")).await;
+        settle(&mut [&mut da, &mut db]).await;
+        let original = last(&db.messages(&dm).await).clone();
+        assert!(db.decrypt(&original).await.unwrap().is_clean());
+
+        // T16: the same ciphertext again under a new message id
+        da.http
+            .post(&format!("/channels/{dm}/messages"), &repost(&original["encrypted"]))
+            .await
+            .unwrap();
+        let replayed = last(&db.messages(&dm).await).clone();
+        assert_ne!(replayed["_id"], original["_id"]);
+        assert!(db.decrypt(&replayed).await.unwrap().is_replay, "replay not flagged");
+        assert!(
+            !db.decrypt(&original).await.unwrap().is_replay,
+            "re-reading is no replay"
+        );
+
+        // T8: moved into another channel (the group): the session is bound to the DM
+        da.http
+            .post(&format!("/channels/{g}/messages"), &repost(&original["encrypted"]))
+            .await
+            .unwrap();
+        let moved = last(&db.messages(&g).await).clone();
+        assert_eq!(db.decrypt(&moved).await.unwrap_err(), DecryptError::ChannelMismatch);
+        assert!(dc.decrypt(&moved).await.is_err(), "C has no key and must not show it");
+
+        // T8: author forged: B reposts A's group envelope; the server checks
+        // the device hint, so B must claim its own device
+        da.send_text(&g, &format!("{m} group")).await;
+        settle(&mut [&mut da, &mut db, &mut dc]).await;
+        let genuine = last(&dc.messages(&g).await).clone();
+        let refused = db
+            .http
+            .raw(
+                "POST",
+                &format!("/channels/{g}/messages"),
+                Some(&repost(&genuine["encrypted"]).to_string()),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(refused.status, 400, "device hint of another session: {}", refused.body);
+        let mut forged_env = genuine["encrypted"].clone();
+        forged_env["device_id"] = json!(db.device());
+        db.http
+            .post(&format!("/channels/{g}/messages"), &repost(&forged_env))
+            .await
+            .unwrap();
+        let forged = last(&dc.messages(&g).await).clone();
+        assert_eq!(forged["author"], b.user_id.as_str());
+        let r = dc.decrypt(&forged).await;
+        assert!(
+            matches!(r, Err(DecryptError::SenderMismatch))
+                || r.as_ref()
+                    .is_ok_and(|d| d.verification == Verification::Mismatch && !d.is_clean()),
+            "forged author shown as normal: {r:?}"
+        );
+
+        // T17: two edits, then the server serves the first edit (and the original) again
+        let mut envelopes = Vec::new();
+        for seq in 1..=2u64 {
+            let mut e = payload_text(&format!("{m} edit {seq}"));
+            e.edit_of = Some(id.clone());
+            e.edit_seq = seq;
+            let env = da.encrypt(&dm, &e).await;
+            da.http
+                .call(
+                    "PATCH",
+                    &format!("/channels/{dm}/messages/{id}"),
+                    Some(&json!({ "encrypted": env.to_value() })),
+                )
+                .await
+                .unwrap();
+            envelopes.push(env.to_value());
+        }
+        let path = format!("/channels/{dm}/messages/{id}");
+        let latest = db.http.get(&path).await.unwrap();
+        let shown = db.decrypt(&latest).await.unwrap();
+        assert_eq!(shown.payload.content, Some(format!("{m} edit 2")));
+        assert!(shown.is_clean(), "{shown:?}");
+        for old in [&envelopes[0], &original["encrypted"]] {
+            da.http
+                .call("PATCH", &path, Some(&json!({ "encrypted": old })))
+                .await
+                .unwrap();
+            let rolled = db.http.get(&path).await.unwrap();
+            assert!(db.decrypt(&rolled).await.unwrap().stale_edit, "rollback not flagged");
+        }
+        let mut ev = Evidence::default();
+        ev.message(&dm, &m);
+        ev.message(&g, &m);
+        ev.save(&s.config, "t08_t16_t17_server_tampering");
+    })
+    .await;
+}
+
+/// T9: what a client without E2EE gets, over HTTP and the socket, is the
+/// placeholder text and an unknown system message, never ciphertext as
+/// text; its plaintext send and edit are refused
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a live backend: scripts/testkit-backend.sh up && test"]
+async fn t09_old_client_view() {
+    let s = stack!();
+    deadline(async {
+        let a = s.register("alice").await.unwrap();
+        let b = s.register("bob").await.unwrap();
+        a.befriend(&b).await.unwrap();
+        let dm = a.encrypted_dm(&b).await.unwrap();
+        let (mut da, mut db) = (Device::open(&a).await, Device::open(&b).await);
+        da.refresh_members(&dm).await;
+        db.refresh_members(&dm).await;
+        let m = marker();
+        let id = da.send_text(&dm, &format!("{m} secret")).await;
+        settle(&mut [&mut da, &mut db]).await;
+
+        // HTTP: the history as an old client fetches it
+        let all = db.all_messages(&dm).await;
+        let system = all
+            .iter()
+            .find(|x| x["system"]["type"] == "encryption_enabled")
+            .unwrap_or_else(|| panic!("no encryption_enabled system message: {all:?}"));
+        assert_eq!(system["system"]["by"], a.user_id.as_str());
+        let msg = all.iter().find(|x| x["_id"] == id.as_str()).unwrap();
+        let placeholder = msg["content"].as_str().expect("old clients get a text");
+        assert!(!placeholder.is_empty() && !placeholder.contains(&m));
+        assert!(!placeholder.contains(msg["encrypted"]["ciphertext"].as_str().unwrap()));
+
+        // socket: the `Message` event carries the same placeholder
+        let event = db
+            .message_events
+            .iter()
+            .find(|e| e["_id"] == id.as_str())
+            .unwrap_or_else(|| panic!("no Message event: {:?}", db.message_events));
+        assert_eq!(event["content"], placeholder);
+        assert!(!event.to_string().contains(&m));
+
+        // an old client writes plaintext: refused, nothing stored in clear
+        let plain = b
+            .http()
+            .raw(
+                "POST",
+                &format!("/channels/{dm}/messages"),
+                Some(&json!({ "content": format!("{m} oops") }).to_string()),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(plain.status, 400, "{}", plain.body);
+        assert_eq!(plain.json()["type"], "EncryptedChannelViolation");
+        let edit = a
+            .http()
+            .raw(
+                "PATCH",
+                &format!("/channels/{dm}/messages/{id}"),
+                Some(&json!({ "content": format!("{m} oops") }).to_string()),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(edit.status, 400, "{}", edit.body);
+        let mut ev = Evidence::default();
+        ev.message(&dm, &m);
+        ev.save(&s.config, "t09_old_client_view");
+    })
+    .await;
+}
+
+/// T11 without FCM: pushd's FCM payload, read by a test consumer of the
+/// outbound routing key, carries the envelope and a fixed body, never the
+/// text; the recipient's device decrypts the envelope from the push alone
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a live backend: scripts/testkit-backend.sh up && test"]
+async fn t11_push_carries_only_the_envelope() {
+    let s = stack!();
+    let Some(queue) = PushQueue::bind(&format!("testkit-push-{}", marker())).await else {
+        eprintln!("STOAT_RABBIT_API not set: skipped");
+        return;
+    };
+    deadline(async {
+        let a = s.register("alice").await.unwrap();
+        let b = s.register("bob").await.unwrap();
+        a.befriend(&b).await.unwrap();
+        let dm = a.encrypted_dm(&b).await.unwrap();
+        let (mut da, mut db) = (Device::open(&a).await, Device::open(&b).await);
+        da.refresh_members(&dm).await;
+        db.refresh_members(&dm).await;
+        settle(&mut [&mut da, &mut db]).await;
+        let token = format!("tk-fcm-{}", marker());
+        b.subscribe_fcm(&token).await.unwrap();
+        // pushd notifies only users without a socket
+        db.disconnect();
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        let m = marker();
+        let id = da.send_text(&dm, &format!("{m} push me")).await;
+        // (an earlier system message of the DM may be routed to the new
+        // subscription too: pushd resolves subscriptions when it consumes)
+        let push = queue
+            .wait_for(30, |p| {
+                p["token"] == token.as_str() && p["notification"]["data"]["message"]["_id"] == id.as_str()
+            })
+            .await
+            .expect("no FCM payload of the message for B's session");
+        assert!(!push.to_string().contains(&m), "plaintext in the push payload: {push}");
+        assert_eq!(push["user_id"], b.user_id.as_str());
+        assert_eq!(push["session_id"], db.device());
+        assert_eq!(push["notification"]["type"], "MessageNotification");
+        let n = &push["notification"]["data"];
+        assert_eq!(n["message"]["_id"], id.as_str());
+        assert_eq!(n["message"]["encrypted"]["device_id"], da.device());
+        let body = n["body"].as_str().unwrap_or_default();
+        assert!(!body.is_empty() && !body.contains(&m), "{body}");
+        eprintln!("push body: {body:?}");
+
+        // the push fast path: one mailbox pass, then the envelope from the push
+        db.sync().await;
+        assert_eq!(db.read(&n["message"]).await, format!("{m} push me"));
+        let mut ev = Evidence::default();
+        ev.message(&dm, &m);
+        ev.save(&s.config, "t11_push_carries_only_the_envelope");
+    })
+    .await;
+    queue.delete().await;
+}
+
+/// T13: B's one-time keys are claimed away: A's session uses the fallback
+/// key, B reads, then tops up to 50 OTKs and a fresh fallback key
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a live backend: scripts/testkit-backend.sh up && test"]
+async fn t13_otks_exhausted_fallback_then_replenish() {
+    let s = stack!();
+    deadline(async {
+        let a = s.register("alice").await.unwrap();
+        let b = s.register("bob").await.unwrap();
+        let x = s.register("mallory").await.unwrap();
+        a.befriend(&b).await.unwrap();
+        // claims are answered for users one shares a DM, group or friendship with
+        x.befriend(&b).await.unwrap();
+        let ch = a.encrypted_dm(&b).await.unwrap();
+        let mut db = Device::open(&b).await;
+        let c0 = db.http.get(paths::KEYS_COUNT).await.unwrap();
+        assert_eq!(c0["one_time_key_counts"]["signed_curve25519"], 50, "{c0}");
+        assert_eq!(c0["device_unused_fallback_key_types"], json!(["signed_curve25519"]));
+
+        // a third user (a friend of B) drains B's keys
+        let target = stoat_crypto::proto::ids::user_id(db.user()).unwrap();
+        let claim = json!({ "one_time_keys": { &target: { db.device(): "signed_curve25519" } } });
+        let xh = x.http();
+        let mut claimed = 0;
+        let mut fallback_seen = false;
+        for _ in 0..60 {
+            let r = xh.post(paths::KEYS_CLAIM, &claim).await.unwrap();
+            let keys = &r["one_time_keys"][&target][db.device()];
+            if keys
+                .as_object()
+                .is_some_and(|o| o.values().any(|k| k["fallback"] == true))
+            {
+                fallback_seen = true;
+                break;
+            }
+            claimed += 1;
+        }
+        assert!(fallback_seen, "the fallback key was never handed out");
+        assert_eq!(claimed, 50, "one OTK per claim");
+        let c1 = db.http.get(paths::KEYS_COUNT).await.unwrap();
+        assert_eq!(
+            c1["one_time_key_counts"]["signed_curve25519"].as_u64().unwrap_or(0),
+            0,
+            "{c1}"
+        );
+
+        // A starts an Olm session on the fallback key; B reads
+        let mut da = Device::open(&a).await;
+        da.refresh_members(&ch).await;
+        db.refresh_members(&ch).await;
+        let m = marker();
+        da.send_text(&ch, &format!("{m} via fallback")).await;
+        settle(&mut [&mut da, &mut db]).await;
+        assert_eq!(
+            db.read(last(&db.messages(&ch).await)).await,
+            format!("{m} via fallback")
+        );
+        assert_eq!(db.received.undecryptable, 0);
+
+        // B replenished its 50 OTKs. matrix-sdk-crypto 0.19.1 rotates the
+        // fallback key by age (a week), not on use: it stays reported as used
+        let c2 = db.http.get(paths::KEYS_COUNT).await.unwrap();
+        assert_eq!(c2["one_time_key_counts"]["signed_curve25519"], 50, "{c2}");
+        assert_eq!(c2["device_unused_fallback_key_types"], json!([]), "{c2}");
+        let report = db.report().await;
+        assert_eq!(
+            report["one_time_keys"]["server_counts"]["signed_curve25519"], 50,
+            "{report}"
+        );
+
+        // drained again within that week: the used fallback key must still be
+        // handed out (Matrix semantics), or new senders cannot reach B
+        let mut fallback_again = false;
+        for _ in 0..60 {
+            let r = xh.post(paths::KEYS_CLAIM, &claim).await.unwrap();
+            let keys = &r["one_time_keys"][&target][db.device()];
+            if keys
+                .as_object()
+                .is_some_and(|o| o.values().any(|k| k["fallback"] == true))
+            {
+                fallback_again = true;
+                break;
+            }
+            if keys.as_object().is_none_or(|o| o.is_empty()) {
+                break;
+            }
+        }
+        assert!(fallback_again, "no key at all for B once its OTKs are gone again");
+        let mut dx = Device::open(&x).await;
+        let dm_x = x.encrypted_dm(&b).await.unwrap();
+        dx.refresh_members(&dm_x).await;
+        db.refresh_members(&dm_x).await;
+        dx.send_text(&dm_x, &format!("{m} fallback reused")).await;
+        settle(&mut [&mut dx, &mut db]).await;
+        assert_eq!(
+            db.read(last(&db.messages(&dm_x).await)).await,
+            format!("{m} fallback reused")
+        );
+        assert_eq!(db.received.undecryptable, 0);
+        let mut ev = Evidence::default();
+        ev.message(&ch, &m);
+        ev.message(&dm_x, &m);
+        ev.save(&s.config, "t13_otks_exhausted_fallback_then_replenish");
+    })
+    .await;
+}
+
+/// T14: the same person on two servers (separate backends, databases and
+/// brokers): two accounts, two devices, keys and mailboxes never cross
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a live backend: scripts/testkit-backend.sh up && test"]
+async fn t14_two_servers_do_not_mix() {
+    let s1 = stack!();
+    let Some(s2) = Stack::connect_second().await else {
+        eprintln!("STOAT_API2 not set: skipped");
+        return;
+    };
+    deadline(async {
+        let a1 = s1.register("alice").await.unwrap();
+        let b1 = s1.register("bob").await.unwrap();
+        let a2 = s2.register_like("alice", &a1).await.unwrap();
+        let b2 = s2.register_like("bob", &b1).await.unwrap();
+        assert_ne!(a1.user_id, a2.user_id, "two servers, two accounts");
+        a1.befriend(&b1).await.unwrap();
+        a2.befriend(&b2).await.unwrap();
+        let dm1 = a1.encrypted_dm(&b1).await.unwrap();
+        let dm2 = a2.encrypted_dm(&b2).await.unwrap();
+        let (mut da1, mut db1) = (Device::open(&a1).await, Device::open(&b1).await);
+        let (mut da2, mut db2) = (Device::open(&a2).await, Device::open(&b2).await);
+        da1.refresh_members(&dm1).await;
+        db1.refresh_members(&dm1).await;
+        da2.refresh_members(&dm2).await;
+        db2.refresh_members(&dm2).await;
+        let m = marker();
+        da1.send_text(&dm1, &format!("{m} on one")).await;
+        da2.send_text(&dm2, &format!("{m} on two")).await;
+        settle(&mut [&mut da1, &mut db1, &mut da2, &mut db2]).await;
+        assert_eq!(db1.read(last(&db1.messages(&dm1).await)).await, format!("{m} on one"));
+        assert_eq!(db2.read(last(&db2.messages(&dm2).await)).await, format!("{m} on two"));
+
+        // the other server's message: no key here, and the channel is unknown there
+        let from2 = last(&db2.messages(&dm2).await).clone();
+        assert_eq!(db1.decrypt(&from2).await.unwrap_err(), DecryptError::MissingRoomKey);
+        assert!(b1.http().get(&format!("/channels/{dm2}")).await.is_err());
+        // a server knows no device of the other server's accounts
+        for (h, other) in [(a1.http(), &b2), (a2.http(), &b1)] {
+            let user = stoat_crypto::proto::ids::user_id(&other.user_id).unwrap();
+            let r = h
+                .post(paths::KEYS_QUERY, &json!({ "device_keys": { &user: [] } }))
+                .await
+                .unwrap();
+            let devices = r["device_keys"][&user].as_object().map_or(0, |o| o.len());
+            assert_eq!(devices, 0, "{r}");
+        }
+        assert!(da1.machine.devices(&b2.user_id).await.unwrap().is_empty());
+        assert!(
+            da1.machine
+                .devices(&a1.user_id)
+                .await
+                .unwrap()
+                .iter()
+                .all(|d| d.device_id != da2.device())
+        );
+        // the other server does not accept this server's token
+        let foreign = s2
+            .anon()
+            .with_token(&a1.token)
+            .raw("GET", paths::KEYS_COUNT, None, None)
+            .await
+            .unwrap();
+        assert_eq!(foreign.status, 401);
+        let mut ev = Evidence::default();
+        ev.message(&dm1, &m);
+        ev.save(&s1.config, "t14_two_servers_do_not_mix");
+    })
+    .await;
+}
+
+/// T18: the server cannot switch encryption off (no route, no other
+/// algorithm, plaintext refused); a server that pretends the channel is
+/// plain does not change the core: the channel state is local and survives
+/// a restart, sending goes on encrypted. (The warning is the host's,
+/// AN-39/WEB-05.)
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a live backend: scripts/testkit-backend.sh up && test"]
+async fn t18_encryption_cannot_be_dropped() {
+    let s = stack!();
+    deadline(async {
+        let a = s.register("alice").await.unwrap();
+        let b = s.register("bob").await.unwrap();
+        a.befriend(&b).await.unwrap();
+        let dm = a.encrypted_dm(&b).await.unwrap();
+        let ah = a.http();
+        let delete = ah
+            .raw("DELETE", &format!("/channels/{dm}/encryption"), None, None)
+            .await
+            .unwrap();
+        assert_eq!(delete.status, 404, "{}", delete.body);
+        let swap = ah
+            .raw(
+                "PUT",
+                &format!("/channels/{dm}/encryption"),
+                Some(&json!({ "algorithm": "m.megolm.v2.aes-sha2" }).to_string()),
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(!swap.ok(), "algorithm swapped: {}", swap.body);
+        let channel = ah.get(&format!("/channels/{dm}")).await.unwrap();
+        assert_eq!(
+            channel["encryption"]["algorithm"],
+            stoat_crypto::proto::ALGORITHM_MEGOLM
+        );
+
+        let mut da = Device::open_persistent(&a).await;
+        let mut db = Device::open(&b).await;
+        da.refresh_members(&dm).await;
+        db.refresh_members(&dm).await;
+        let m = marker();
+        da.send_text(&dm, &format!("{m} one")).await;
+        settle(&mut [&mut da, &mut db]).await;
+
+        // a lying server: the channel comes without `encryption`; the core
+        // does not ask, it kept the channel (members, settings) in its store
+        da.restart().await;
+        da.reconnect().await.unwrap();
+        da.send_text(&dm, &format!("{m} two")).await;
+        settle(&mut [&mut da, &mut db]).await;
+        assert_eq!(db.read_all(&dm).await, [format!("{m} one"), format!("{m} two")]);
+        let report = da.report().await;
+        assert!(
+            report["channels"]["listed"]
+                .as_array()
+                .is_some_and(|l| l.iter().any(|c| c["channel_id"] == dm.as_str())),
+            "{report}"
+        );
+        let plain = ah
+            .raw(
+                "POST",
+                &format!("/channels/{dm}/messages"),
+                Some(&json!({ "content": format!("{m} plain") }).to_string()),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(plain.status, 400);
+        let mut ev = Evidence::default();
+        ev.message(&dm, &m);
+        ev.save(&s.config, "t18_encryption_cannot_be_dropped");
+    })
+    .await;
+}
+
+/// T19: the device processes its mailbox and dies before `ack`; after the
+/// restart the server delivers the same ids again: they are dropped before
+/// the library (no Olm error, no unwedging m.dummy to the sender)
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a live backend: scripts/testkit-backend.sh up && test"]
+async fn t19_crash_between_processing_and_ack() {
+    let s = stack!();
+    deadline(async {
+        let a = s.register("alice").await.unwrap();
+        let b = s.register("bob").await.unwrap();
+        a.befriend(&b).await.unwrap();
+        let dm = a.encrypted_dm(&b).await.unwrap();
+        let mut da = Device::open(&a).await;
+        let mut db = Device::open_persistent(&b).await;
+        da.refresh_members(&dm).await;
+        db.refresh_members(&dm).await;
+        let m = marker();
+        da.send_text(&dm, &format!("{m} before the crash")).await;
+
+        let page = db.fetch_page().await.unwrap();
+        let n = page.len();
+        assert!(n > 0, "the room key is in the mailbox");
+        let r = db.process(page, false).await.unwrap();
+        assert_eq!((r.processed, r.undecryptable), (n, 0));
+        db.restart().await;
+
+        db.received = Default::default();
+        let again = db.fetch_page().await.unwrap();
+        assert_eq!(again.len(), n, "nothing was acknowledged");
+        let r = db.process(again, true).await.unwrap();
+        assert_eq!(
+            (r.skipped_duplicates, r.processed, r.undecryptable),
+            (n, 0, 0),
+            "redelivered ids must be dropped before the library"
+        );
+        assert!(db.fetch_page().await.unwrap().is_empty(), "acknowledged now");
+        db.reconnect().await.unwrap();
+        assert_eq!(
+            db.read(last(&db.messages(&dm).await)).await,
+            format!("{m} before the crash")
+        );
+
+        // no new Olm session / m.dummy towards A
+        da.received = Default::default();
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        da.sync().await;
+        assert_eq!(da.received.processed, 0, "A got something: an unwedging attempt?");
+        let mut ev = Evidence::default();
+        ev.message(&dm, &m);
+        ev.save(&s.config, "t19_crash_between_processing_and_ack");
     })
     .await;
 }

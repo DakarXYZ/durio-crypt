@@ -20,7 +20,15 @@ pub struct Stack {
 impl Stack {
     /// `None` when no backend is configured; panics if it is not E2EE-enabled
     pub async fn connect() -> Option<Self> {
-        let config = Config::from_env()?;
+        Self::connect_to(Config::from_env()?).await
+    }
+
+    /// Server 2 of T14 (`STOAT_API2`), if configured
+    pub async fn connect_second() -> Option<Self> {
+        Self::connect_to(Config::second_from_env()?).await
+    }
+
+    async fn connect_to(config: Config) -> Option<Self> {
         let root = Http::new(&config.api, None)
             .get("/")
             .await
@@ -53,6 +61,31 @@ impl Stack {
             .to_lowercase();
         let email = format!("{name}-{tag}@testkit.invalid");
         let password = format!("testkit-{tag}-password");
+        self.register_with(name, &tag, email, password).await
+    }
+
+    /// The same person (e-mail, password) on this server: a separate account
+    pub async fn register_like(&self, name: &str, other: &Account) -> Result<Account, HttpError> {
+        let tag = other
+            .username
+            .split('_')
+            .next_back()
+            .unwrap_or("x")
+            .split('#')
+            .next()
+            .unwrap_or("x")
+            .to_owned();
+        self.register_with(name, &tag, other.email.clone(), other.password.clone())
+            .await
+    }
+
+    async fn register_with(
+        &self,
+        name: &str,
+        tag: &str,
+        email: String,
+        password: String,
+    ) -> Result<Account, HttpError> {
         let anon = self.anon();
         anon.call(
             "POST",
@@ -180,6 +213,25 @@ impl Account {
                 Some(&json!({ "algorithm": stoat_crypto::proto::ALGORITHM_MEGOLM })),
             )
             .await
+    }
+
+    pub async fn add_member(&self, group: &str, member: &Account) -> Result<(), HttpError> {
+        self.http()
+            .put(&format!("/channels/{group}/recipients/{}", member.user_id), None)
+            .await
+            .map(|_| ())
+    }
+
+    /// `POST /push/subscribe` as an FCM device of this session
+    pub async fn subscribe_fcm(&self, token: &str) -> Result<(), HttpError> {
+        self.http()
+            .call(
+                "POST",
+                "/push/subscribe",
+                Some(&json!({ "endpoint": "fcm", "p256dh": "", "auth": token })),
+            )
+            .await
+            .map(|_| ())
     }
 
     pub async fn remove_member(&self, group: &str, member: &Account) -> Result<(), HttpError> {
