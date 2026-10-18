@@ -35,6 +35,7 @@ pub mod b64;
 pub mod envelope;
 pub mod events;
 pub mod ids;
+pub mod key_export;
 pub mod payload;
 pub mod recovery_key;
 pub mod to_device;

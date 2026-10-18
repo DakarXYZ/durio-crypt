@@ -45,3 +45,10 @@ path = "fuzz_targets/recovery_key.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "key_export"
+path = "fuzz_targets/key_export.rs"
+test = false
+doc = false
+bench = false
