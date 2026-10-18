@@ -348,7 +348,7 @@ impl FakeServer {
     }
 
     /// `E2eeDeviceListUpdate` to every device of every contact of `user`
-    fn device_list_update(&mut self, user: &str) {
+    pub fn device_list_update(&mut self, user: &str) {
         let event = json!({ "type": "E2eeDeviceListUpdate", "user": user });
         self.ws_log.push(event.clone());
         for c in self.contacts(user) {
@@ -929,6 +929,11 @@ impl FakeServer {
 
     pub fn device_keys(&self, user: &str, device: &str) -> Option<&Value> {
         self.devices.get(user)?.get(device)
+    }
+
+    /// Server-side tampering with stored device keys (CR-07 tests)
+    pub fn device_keys_mut(&mut self, user: &str, device: &str) -> Option<&mut Value> {
+        self.devices.get_mut(user)?.get_mut(device)
     }
 
     /// The mailbox of a device as stored, oldest first (redirect tests)

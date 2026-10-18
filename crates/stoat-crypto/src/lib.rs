@@ -32,7 +32,8 @@
 //!    [`receive_device_list_update`].
 //! 5. **Members**: whenever the client learns the full member list of an
 //!    encrypted DM/group (channel load, Ready, `ChannelGroupJoin/Leave`,
-//!    encryption enabled) → [`set_channel_members`].
+//!    encryption enabled) → [`set_channel_members`]. The backend sends no
+//!    device-list update on join/leave; the core re-queries and rotates.
 //! 6. **Request pass**: [`outgoing_requests`] → run each request → exactly
 //!    one [`mark_request_sent`] (body of the 2xx, may be empty) or
 //!    [`mark_request_failed`] (status) per run. Repeat until a pass returns

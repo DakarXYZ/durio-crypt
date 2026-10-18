@@ -477,6 +477,83 @@ async fn redirected_olm_message_is_rejected() {
     assert_eq!(b2.decrypt(&m).await.unwrap_err(), DecryptError::MissingRoomKey);
 }
 
+/// CR-07: device keys the server swapped under a known device id are
+/// ignored; the old keys stay in use
+#[tokio::test]
+async fn swapped_device_keys_are_ignored() {
+    let srv = server();
+    let mut a = Device::login(&srv, "A", "A1").await;
+    let mut b = Device::login(&srv, "B", "B1").await;
+    let mangler = Device::login(&srv, "M", "M1").await;
+    let dm = channel(&srv, "D", &[&a, &b]).await;
+    a.send(&dm, &text("before")).await;
+    let known = a.m().devices(&b.auth.user).await.unwrap();
+
+    // another device's curve key under B1's id (signature no longer matches)
+    let foreign = srv
+        .lock()
+        .unwrap()
+        .device_keys(&mangler.auth.user, &mangler.auth.device)
+        .unwrap()
+        .clone();
+    {
+        let mut s = srv.lock().unwrap();
+        let keys = s.device_keys_mut(&b.auth.user, &b.auth.device).unwrap();
+        let key_id = format!("curve25519:{}", b.auth.device);
+        let foreign_key = foreign["keys"][format!("curve25519:{}", mangler.auth.device)].clone();
+        keys["keys"][key_id] = foreign_key;
+        s.device_list_update(&b.auth.user);
+    }
+    a.sync().await;
+    assert_eq!(a.m().devices(&b.auth.user).await.unwrap(), known);
+    a.m().invalidate_outbound_session(&dm).await.unwrap();
+    a.send(&dm, &text("after")).await;
+    b.sync().await;
+    assert_eq!(b.read(&last(&srv, &dm)).await, "after");
+}
+
+/// CR-07: joining publishes no device-list update. A member who left, added
+/// a device while out of contact and came back gets the key on the new
+/// device too — the core re-queries members on any membership change.
+#[tokio::test]
+async fn rejoin_with_a_new_device_is_seen() {
+    let srv = server();
+    let mut a = Device::login(&srv, "A", "A1").await;
+    let b = Device::login(&srv, "B", "B1").await;
+    let mut c1 = Device::login(&srv, "C", "C1").await;
+    let group = channel(&srv, "G", &[&a, &b, &c1]).await;
+    a.send(&group, &text("all")).await;
+
+    // C leaves; while A and C share no channel, C adds a device
+    srv.lock()
+        .unwrap()
+        .channel_set_members(&group, &[&a.auth.user, &b.auth.user]);
+    a.join(&group, &["A", "B"]).await;
+    let mut c2 = Device::login(&srv, "C", "C2").await;
+    a.sync().await;
+    assert!(
+        !a.m()
+            .devices(&c1.auth.user)
+            .await
+            .unwrap()
+            .iter()
+            .any(|d| d.device_id == c2.auth.device),
+        "A was not told"
+    );
+
+    // C comes back
+    srv.lock()
+        .unwrap()
+        .channel_set_members(&group, &[&a.auth.user, &b.auth.user, &c1.auth.user]);
+    a.join(&group, &["A", "B", "C"]).await;
+    c2.join(&group, &["A", "B", "C"]).await;
+    a.send(&group, &text("welcome back")).await;
+    sync_all(&mut [&mut c1, &mut c2]).await;
+    let m = last(&srv, &group);
+    assert_eq!(c1.read(&m).await, "welcome back");
+    assert_eq!(c2.read(&m).await, "welcome back");
+}
+
 /// CR-19: an edit is an in-place PATCH — it names its own message and has
 /// a sequence; anything else is flagged. Rollbacks stay flagged after a
 /// restart (the tables are in the store).

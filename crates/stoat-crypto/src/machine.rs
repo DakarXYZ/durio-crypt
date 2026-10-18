@@ -50,6 +50,8 @@ use crate::types::*;
 
 /// Prefix of our values in the library's custom-value table
 const KV_CHANNEL: &str = "stoat.channel.";
+/// Every channel ever set up
+const KV_CHANNELS: &str = "stoat.channels.v1";
 
 /// Persisted members and settings of an encrypted channel
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -86,6 +88,8 @@ struct Inner {
     /// also serializes everything that goes through `receive_sync_changes`
     sync: Mutex<BTreeSet<String>>,
     channels: Mutex<HashMap<String, ChannelState>>,
+    /// `KV_CHANNELS`, loaded on first use
+    known_channels: Mutex<Option<BTreeSet<String>>>,
     /// per-channel send lock: `prepare_send` + `encrypt` never interleave
     send_locks: SyncMutex<HashMap<String, Arc<Mutex<()>>>>,
     /// cached library requests, the claim in flight, parts, retries
@@ -153,6 +157,7 @@ impl CryptoMachine {
                 user_id,
                 sync: Mutex::new(processed),
                 channels: Mutex::new(HashMap::new()),
+                known_channels: Mutex::new(None),
                 send_locks: SyncMutex::new(HashMap::new()),
                 outbox: Mutex::new(outbox),
                 dirty: AtomicBool::new(true),
@@ -492,15 +497,24 @@ impl CryptoMachine {
     }
 
     /// Full member list of an encrypted channel (ULIDs) and its settings.
-    /// Members are tracked (rule 3); a member who left makes the library rotate
-    /// the outbound session on the next send.
+    /// Call it whenever the client learns the members (channel load, Ready,
+    /// `ChannelGroupJoin/Leave`). Members are tracked (rule 3). The core
+    /// diffs with the stored list:
+    ///
+    /// * any change → every member's devices are queried again before the
+    ///   next send (the backend publishes no device-list update on join or
+    ///   leave);
+    /// * a member left → the outbound session is dropped: the next send
+    ///   rotates (S4); a member joined → no rotation, the newcomer gets the
+    ///   key from the current index (S5);
+    /// * new rotation settings → a new session.
     pub async fn set_channel_members(
         &self,
         channel: &str,
         members: &[String],
         settings: ChannelEncryptionSettings,
     ) -> Result<()> {
-        ids::room_id(channel)?;
+        let room = ids::room_id(channel)?;
         let mut set = BTreeSet::new();
         let mut users = vec![self.inner.user_id.clone()];
         for m in members {
@@ -508,31 +522,75 @@ impl CryptoMachine {
             set.insert(m.to_ascii_uppercase());
         }
         set.insert(self.inner.user_ulid.clone());
+        users.sort();
+        users.dedup();
         self.olm()
             .update_tracked_users(users.iter().map(|u| u.as_ref()))
             .await
             .map_err(store_err("track members"))?;
         let key = channel.to_ascii_uppercase();
-        let state = ChannelState { members: set, settings };
         let lock = self.send_lock(channel);
         let _guard = lock.lock().await;
         let previous = self.load_channel(&key).await?;
+        let changed = previous.as_ref().is_none_or(|p| p.members != set);
+        let left = previous
+            .as_ref()
+            .is_some_and(|p| p.members.iter().any(|m| !set.contains(m)));
+        let resettled = previous.as_ref().is_some_and(|p| p.settings != settings);
+        let state = ChannelState { members: set, settings };
         self.olm()
             .store()
             .set_value(&format!("{KV_CHANNEL}{key}"), &state)
             .await
             .map_err(store_err("save channel"))?;
+        if changed {
+            let mut lists = DeviceLists::new();
+            lists.changed = users;
+            let processed = self.inner.sync.lock().await;
+            self.sync_changes(&processed, vec![], &lists, None).await?;
+        }
         // the library keeps the settings of a running session: new rotation
         // limits take effect with a new session
-        if previous.is_some_and(|p| p.settings != settings) {
+        if left || resettled {
             self.olm()
-                .discard_room_key(&ids::room_id(channel)?)
+                .discard_room_key(&room)
                 .await
                 .map_err(store_err("discard room key"))?;
         }
-        self.inner.channels.lock().await.insert(key, state);
+        self.inner.channels.lock().await.insert(key.clone(), state);
+        self.remember_channel(key).await?;
         self.touch();
         Ok(())
+    }
+
+    async fn remember_channel(&self, key: String) -> Result<()> {
+        let mut known = self.inner.known_channels.lock().await;
+        let known = self.load_known_channels(&mut known).await?;
+        if known.insert(key) {
+            self.olm()
+                .store()
+                .set_value(KV_CHANNELS, &*known)
+                .await
+                .map_err(store_err("save channels"))?;
+        }
+        Ok(())
+    }
+
+    async fn load_known_channels<'a>(
+        &self,
+        known: &'a mut Option<BTreeSet<String>>,
+    ) -> Result<&'a mut BTreeSet<String>> {
+        if known.is_none() {
+            *known = Some(
+                self.olm()
+                    .store()
+                    .get_value(KV_CHANNELS)
+                    .await
+                    .map_err(store_err("load channels"))?
+                    .unwrap_or_default(),
+            );
+        }
+        Ok(known.as_mut().expect("loaded"))
     }
 
     /// Channel state from the cache, else from the store
