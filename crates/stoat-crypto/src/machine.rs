@@ -43,6 +43,7 @@ use stoat_crypto_proto::payload::{EVENT_TYPE, MegolmPlaintext, MessagePayload, P
 use crate::backup::PendingRecovery;
 use crate::batch::ServerLimits;
 use crate::binding::{self, Seen};
+use crate::diagnostics::Recorder;
 use crate::error::{CryptoError, DecryptError, Result, WithheldReason};
 use crate::gossip::{self, KeyRequests};
 use crate::ids;
@@ -111,6 +112,8 @@ struct Inner {
     flows: SyncMutex<Flows>,
     /// CR-12: a backup being set up, until the server created the version
     recovery: Mutex<Option<PendingRecovery>>,
+    /// CR-22: counters and recent failures for `debug_report`
+    recorder: SyncMutex<Recorder>,
     /// dropped last: the store must close before the lock is released
     _opened_lock: StoreLockHolder,
 }
@@ -181,6 +184,7 @@ impl CryptoMachine {
                 binding: binding::Tables::default(),
                 flows: SyncMutex::new(Flows::default()),
                 recovery: Mutex::new(None),
+                recorder: SyncMutex::new(Recorder::new()),
                 _opened_lock: StoreLockHolder {
                     #[cfg(not(target_arch = "wasm32"))]
                     _lock: lock,
@@ -223,6 +227,31 @@ impl CryptoMachine {
 
     pub(crate) fn key_requests(&self) -> &SyncMutex<KeyRequests> {
         &self.inner.key_requests
+    }
+
+    pub(crate) fn recorder(&self) -> std::sync::MutexGuard<'_, Recorder> {
+        self.inner.recorder.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// CR-22: mailbox ids processed but not acknowledged yet
+    pub(crate) async fn processed_unacked(&self) -> usize {
+        self.inner.sync.lock().await.len()
+    }
+
+    /// CR-22: counts of the request queues
+    pub(crate) async fn outbox_stats(&self) -> Value {
+        self.inner.outbox.lock().await.stats()
+    }
+
+    /// CR-22: every channel ever set up
+    pub(crate) async fn known_channel_list(&self) -> Result<Vec<String>> {
+        let mut known = self.inner.known_channels.lock().await;
+        Ok(self.load_known_channels(&mut known).await?.iter().cloned().collect())
+    }
+
+    /// CR-22: members of a channel as last set (0: never set up)
+    pub(crate) async fn channel_member_count(&self, channel: &str) -> Result<usize> {
+        Ok(self.load_channel(channel).await?.map_or(0, |s| s.members.len()))
     }
 
     pub(crate) fn flows(&self) -> std::sync::MutexGuard<'_, Flows> {
@@ -385,6 +414,7 @@ impl CryptoMachine {
     /// means the server has other keys for this device.
     pub async fn mark_request_failed(&self, id: &str, kind: RequestKind, status: u16) -> Result<()> {
         self.touch();
+        self.recorder().request_failed(kind, status);
         match (kind, status) {
             // run the same request again with `x-mfa-ticket`
             (RequestKind::BackupVersionCreate, 401 | 403) => return Err(CryptoError::MfaRequired),
@@ -533,6 +563,8 @@ impl CryptoMachine {
         }
         drop(processed);
         self.touch();
+        self.recorder()
+            .mailbox(result.processed, result.skipped_duplicates, result.undecryptable);
         // CR-11: flows touched, SAS starts of accepted requests accepted
         result.verifications = self.verification_events(&all_events).await?;
         // CR-08: keys that arrived need no request; cancel the ones sent
@@ -595,6 +627,10 @@ impl CryptoMachine {
             .iter()
             .map(|k| OneTimeKeyAlgorithm::from(k.as_str()))
             .collect();
+        self.recorder().otk_counts(
+            counts.one_time_key_counts.clone(),
+            counts.device_unused_fallback_key_types.clone(),
+        );
         let processed = self.inner.sync.lock().await;
         self.sync_changes(&processed, vec![], &DeviceLists::new(), Some((&otk, &fallback)))
             .await?;
@@ -902,6 +938,12 @@ impl CryptoMachine {
     /// Decrypt one message and evaluate everything the UI needs: shield,
     /// replay, edit and reply binding (CR-19).
     pub async fn decrypt(&self, message: &IncomingEncryptedMessage) -> Result<DecryptedMessage, DecryptError> {
+        let result = self.decrypt_one(message).await;
+        self.recorder().decrypt(result.as_ref().map(|_| ()).map_err(|e| *e));
+        result
+    }
+
+    async fn decrypt_one(&self, message: &IncomingEncryptedMessage) -> Result<DecryptedMessage, DecryptError> {
         let env = &message.envelope;
         env.validate()?;
         let room = ids::room_id(&message.channel_id).map_err(|_| DecryptError::Corrupted)?;

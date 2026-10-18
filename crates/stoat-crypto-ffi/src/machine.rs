@@ -327,6 +327,13 @@ impl CryptoMachine {
         run(async move { Ok(m.export_room_keys(&passphrase, &channel_ids).await?.into()) }).await
     }
 
+    /// Diagnostic report (JSON, CR-22): counts, states and error codes, no
+    /// keys, ids of others, ciphertext or text — for "Send report"
+    pub async fn debug_report(&self) -> Result<String, CryptoError> {
+        let m = self.core();
+        run(async move { Ok(m.debug_report().await?) }).await
+    }
+
     /// Import a key file (`data` of an export, or another Matrix client's);
     /// `WrongPassphrase` / `InvalidKeyFile` on failure, nothing imported then
     pub async fn import_room_keys(&self, file: String, passphrase: Vec<u8>) -> Result<KeyImportResult, CryptoError> {

@@ -158,6 +158,10 @@ object Scenarios {
                     val got = a2.machine.decrypt(sent)
                     assertEquals("exported", content(got))
                     assertEquals(Verification.UNAUTHENTICATED, (got as DecryptResult.Decrypted).message.verification)
+                    // CR-22: counts and codes only
+                    val report = Json.parse(a2.machine.debugReport()).jsonObject
+                    assertEquals("1", report["format"]!!.jsonPrimitive.content)
+                    assertTrue(!report.toString().contains("exported"))
                 }
             }
         }

@@ -230,6 +230,11 @@ async fn key_export_and_import() {
         unreachable!()
     };
     assert_eq!(message.verification, Verification::Unauthenticated);
+
+    // CR-22: the report counts the imported session, shows no key
+    let report: Value = serde_json::from_str(&a2.m.debug_report().await.unwrap()).unwrap();
+    assert_eq!(report["channels"]["listed"][0]["imported"], 1);
+    assert!(!report.to_string().contains(&message.session_id));
 }
 
 #[tokio::test]

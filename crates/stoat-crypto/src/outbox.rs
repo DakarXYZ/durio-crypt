@@ -373,6 +373,28 @@ impl Outbox {
         self.part_of.contains_key(id)
     }
 
+    /// CR-22: counts only — no bodies, no ids
+    pub(crate) fn stats(&self) -> serde_json::Value {
+        let mut cached = std::collections::BTreeMap::<&str, usize>::new();
+        for r in &self.cached {
+            *cached.entry(r.kind.as_str()).or_default() += 1;
+        }
+        serde_json::json!({
+            "cached": cached,
+            "upload_in_flight": self.upload.is_some(),
+            "claim_in_flight": self.claim.is_some(),
+            "split_requests": self.splits.len(),
+            "own": self.own.len(),
+            "retries_pending": self.retries.pending.len(),
+            "retry_attempts_max": self.retries.pending.iter().map(|r| r.attempts).max().unwrap_or(0),
+            "devices_given_up": self.retries.gave_up.len(),
+            "limits": {
+                "max_to_device_batch": self.limits.max_to_device_batch,
+                "max_request_bytes": self.limits.max_request_bytes,
+            },
+        })
+    }
+
     pub(crate) fn undelivered(&self) -> Vec<(String, String, u32, bool)> {
         let mut out: Vec<(String, String, u32, bool)> = self
             .retries

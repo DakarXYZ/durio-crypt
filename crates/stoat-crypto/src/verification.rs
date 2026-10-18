@@ -203,6 +203,11 @@ impl Flows {
     pub(crate) fn any_active(&self) -> bool {
         self.0.iter().any(|f| !f.last.is_terminal())
     }
+
+    /// CR-22: (known, open)
+    pub(crate) fn counts(&self) -> (usize, usize) {
+        (self.0.len(), self.0.iter().filter(|f| !f.last.is_terminal()).count())
+    }
 }
 
 fn cancelled(info: &CancelInfo) -> SasState {

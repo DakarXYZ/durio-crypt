@@ -113,6 +113,13 @@
 //!   `room_keys`. Imported keys show `Unauthenticated`, like restored ones.
 //!   Both take about a second of PBKDF2.
 //!
+//! ## Diagnostics (CR-22)
+//!
+//! "Send diagnostic report" (instead of Sentry): [`debug_report`] → JSON
+//! with counts, states and error codes only (no keys, session ids, others'
+//! ids, ciphertext or text); attach it to the report the user sends. The
+//! recent failures in it live in memory: take the report before a restart.
+//!
 //! ## Attachments (CR-10)
 //!
 //! * **Upload**: per file [`AttachmentEncryptor::new`] → `update` per chunk
@@ -154,6 +161,7 @@
 //! [`backup_status`]: CryptoMachine::backup_status
 //! [`export_room_keys`]: CryptoMachine::export_room_keys
 //! [`import_room_keys`]: CryptoMachine::import_room_keys
+//! [`debug_report`]: CryptoMachine::debug_report
 
 // CR-16: no panics on paths the host calls (FFI turns them into exceptions,
 // but a panic midway can leave half-done state); tests may
@@ -172,6 +180,7 @@ mod attachments;
 mod backup;
 mod batch;
 mod binding;
+mod diagnostics;
 mod error;
 mod export;
 mod gossip;
@@ -191,6 +200,7 @@ pub use attachments::{
 };
 pub use backup::{BackupRestore, BackupStatus, RESTORE_BATCH, RecoverySecrets, RecoverySetup, RestoreProgress};
 pub use batch::ServerLimits;
+pub use diagnostics::DEBUG_REPORT_FORMAT;
 pub use error::{CryptoError, DecryptError, DecryptFailureKind, Result, WithheldReason};
 pub use export::{EXPORT_ROUNDS, KeyExport, KeyImportResult};
 pub use machine::CryptoMachine;

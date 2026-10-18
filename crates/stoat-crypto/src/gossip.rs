@@ -78,6 +78,11 @@ impl KeyRequests {
         self.waiting.contains_key(&key) || self.sent.contains_key(&key)
     }
 
+    /// CR-22: (waiting for the debounce, asked and unanswered)
+    pub(crate) fn counts(&self) -> (usize, usize) {
+        (self.waiting.len(), self.sent.len())
+    }
+
     /// Milliseconds until the next waiting key is due
     pub(crate) fn next_due_ms(&self) -> Option<u64> {
         self.waiting.values().map(|w| w.due_ms).min()
