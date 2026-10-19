@@ -39,6 +39,12 @@ CADDY_IMAGE=caddy:2.10.2-alpine
 PUBLIC_PORT=${TESTKIT_PUBLIC_PORT:-}
 winpath() { (cd "$1" && (pwd -W 2>/dev/null || pwd)); }
 running() { [ "$(docker container inspect -f '{{.State.Running}}' "$1" 2>/dev/null)" = true ]; }
+# a container that did not come up: its state (OOMKilled on a busy CI runner) and the end of its log
+died() {
+    echo "$1 did not start: $(docker container inspect -f 'status={{.State.Status}} oom={{.State.OOMKilled}} exit={{.State.ExitCode}}' "durio-test-$1" 2>&1)" >&2
+    docker logs --tail 30 "durio-test-$1" >&2 2>&1 || true
+    exit 1
+}
 
 # $1: "" for server 1, "2" for server 2 (T14: its own mongo, redis, rabbit)
 revolt_env() {
@@ -147,12 +153,12 @@ up_second() {
         until docker exec durio-test-mongo2 mongosh --quiet --eval \
             'try { rs.status().ok } catch (e) { rs.initiate({_id: "rs1", members: [{_id: 0, host: "durio-test-mongo2:27017"}]}).ok }' \
             2>/dev/null | grep -q 1; do
-            i=$((i + 1)); [ $i -lt 60 ] || { echo "mongo2 did not start" >&2; exit 1; }
+            i=$((i + 1)); [ $i -lt 180 ] || died mongo2
             sleep 1
         done
         i=0
         until docker exec durio-test-rabbit2 rabbitmq-diagnostics -q check_running >/dev/null 2>&1; do
-            i=$((i + 1)); [ $i -lt 60 ] || { echo "rabbit2 did not start" >&2; exit 1; }
+            i=$((i + 1)); [ $i -lt 180 ] || died rabbit2
             sleep 1
         done
         docker exec durio-test-rabbit2 rabbitmqctl eval 'rabbit_exchange:declare(rabbit_misc:r(<<"/">>, exchange,
