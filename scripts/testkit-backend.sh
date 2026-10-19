@@ -10,7 +10,13 @@
 #   scripts/testkit-backend.sh check   # Mongo/MinIO hold ciphertext only (evidence from the last test run)
 #   scripts/testkit-backend.sh load    # the load scenario (STOAT_LOAD_USERS, default 50; out/testkit/load.json)
 #   scripts/testkit-backend.sh chaos   # chaos scenarios: the test asks, this script stops/restarts containers
-#   scripts/testkit-backend.sh down    # services, MinIO, server 2 (infra: tools/rust-dev/test-env.sh down)
+#   scripts/testkit-backend.sh peer    # the scripted E2EE peer of the clients' e2e tests (examples/peer.rs,
+#                                      # JSON lines on stdin/stdout; built by `up` when TESTKIT_PUBLIC_PORT is set)
+#   scripts/testkit-backend.sh down    # services, MinIO, server 2, proxy (infra: tools/rust-dev/test-env.sh down)
+#
+# TESTKIT_PUBLIC_PORT=14443: also a TLS proxy (Caddy, internal CA) on 127.0.0.1:<port> for apps on
+# the host (WEB-08, D7): https://srv1.localhost:<port> is server 1, srv2.localhost server 2, each
+# with /.well-known/stoat, /api, /ws, /autumn; the services then advertise these addresses.
 #
 # Config only through REVOLT__* env vars: E2EE on, open registration without
 # e-mail verification or captcha. Rate limits stay on (the testkit backs off on 429).
@@ -29,6 +35,8 @@ S3_PASS=minioautumn
 SERVICES="delta bonfire autumn pushd"
 SECOND="mongo2 redis2 rabbit2 delta2 bonfire2"
 RABBIT_API=http://rabbituser:rabbitpass@durio-test-rabbit:15672
+CADDY_IMAGE=caddy:2.10.2-alpine
+PUBLIC_PORT=${TESTKIT_PUBLIC_PORT:-}
 winpath() { (cd "$1" && (pwd -W 2>/dev/null || pwd)); }
 running() { [ "$(docker container inspect -f '{{.State.Running}}' "$1" 2>/dev/null)" = true ]; }
 
@@ -37,15 +45,22 @@ revolt_env() {
     n=${1:-}
     rs=rs0
     [ -z "$n" ] || rs=rs1
+    if [ -n "$PUBLIC_PORT" ]; then
+        site=https://srv${n:-1}.localhost:$PUBLIC_PORT
+        set -- "$site" "$site/api" "wss://srv${n:-1}.localhost:$PUBLIC_PORT/ws" "$site/autumn" "$site/january"
+    else
+        set -- "http://durio-test-delta$n:14702" "http://durio-test-delta$n:14702" "ws://durio-test-bonfire$n:14703" \
+            http://durio-test-autumn:14704 http://durio-test-january:14705
+    fi
     cat <<EOF
 REVOLT__DATABASE__MONGODB=mongodb://durio-test-mongo$n/?replicaSet=$rs
 REVOLT__DATABASE__REDIS=redis://durio-test-redis$n/
 REVOLT__RABBIT__HOST=durio-test-rabbit$n
-REVOLT__HOSTS__APP=http://durio-test-delta$n:14702
-REVOLT__HOSTS__API=http://durio-test-delta$n:14702
-REVOLT__HOSTS__EVENTS=ws://durio-test-bonfire$n:14703
-REVOLT__HOSTS__AUTUMN=http://durio-test-autumn:14704
-REVOLT__HOSTS__JANUARY=http://durio-test-january:14705
+REVOLT__HOSTS__APP=$1
+REVOLT__HOSTS__API=$2
+REVOLT__HOSTS__EVENTS=$3
+REVOLT__HOSTS__AUTUMN=$4
+REVOLT__HOSTS__JANUARY=$5
 REVOLT__FEATURES__E2EE__ENABLED=true
 REVOLT__API__REGISTRATION__INVITE_ONLY=false
 REVOLT__API__SMTP__HOST=
@@ -115,6 +130,7 @@ up() {
     for s in bonfire autumn pushd; do
         running durio-test-$s || { docker logs durio-test-$s 2>&1 | tail -20 >&2; echo "$s exited" >&2; exit 1; }
     done
+    [ -z "$PUBLIC_PORT" ] || up_public
     echo "backend up: http://durio-test-delta:14702 ws://durio-test-bonfire:14703 http://durio-test-autumn:14704 (network $NET)"
 }
 
@@ -145,6 +161,32 @@ up_second() {
     start_services 2 delta bonfire
     wait_delta durio-test-delta2
     echo "server 2 up: http://durio-test-delta2:14702 ws://durio-test-bonfire2:14703"
+}
+
+# Apps on the host reach the stack through Caddy with TLS from its internal CA
+# (the desktop build allows only https:/wss:); one site per server, like self-hosted
+up_public() {
+    mkdir -p out
+    {
+        printf '{\n\tlocal_certs\n\tskip_install_trust\n\tadmin off\n}\n'
+        for n in "" 2; do
+            [ -z "$n" ] || running durio-test-delta2 || continue
+            host=srv${n:-1}.localhost
+            printf '%s {\n' "$host"
+            printf '\thandle /.well-known/stoat {\n\t\theader Access-Control-Allow-Origin *\n'
+            printf '\t\theader Content-Type application/json\n'
+            printf '\t\trespond `{"api":"https://%s:%s/api"}`\n\t}\n' "$host" "$PUBLIC_PORT"
+            printf '\thandle_path /api* {\n\t\treverse_proxy durio-test-delta%s:14702\n\t}\n' "$n"
+            printf '\thandle_path /ws {\n\t\treverse_proxy durio-test-bonfire%s:14703\n\t}\n' "$n"
+            printf '\thandle_path /autumn* {\n\t\treverse_proxy durio-test-autumn:14704\n\t}\n}\n'
+        done
+    } > out/Caddyfile
+    docker rm -f durio-test-proxy >/dev/null 2>&1 || true
+    MSYS_NO_PATHCONV=1 docker run -d --name durio-test-proxy --network $NET --memory 128m \
+        -p "127.0.0.1:$PUBLIC_PORT:443" -v "$(winpath out)/Caddyfile:/etc/caddy/Caddyfile:ro" $CADDY_IMAGE >/dev/null
+    echo "building the peer (examples/peer.rs)"
+    scripts/dcargo.sh cargo build -q --locked -p stoat-crypto-testkit --example peer
+    echo "public: https://srv1.localhost:$PUBLIC_PORT (server 2: srv2.localhost), TLS from Caddy's internal CA"
 }
 
 stack_env() {
@@ -281,8 +323,13 @@ check() {
     return $fail
 }
 
+# The scripted peer (examples/peer.rs) on stdin/stdout
+run_peer() {
+    DOCKER_TTY=-i DCARGO_DOCKER_ARGS="$(stack_env)" scripts/dcargo.sh target/debug/examples/peer
+}
+
 down() {
-    for s in $SERVICES minio $SECOND; do docker rm -f durio-test-$s >/dev/null 2>&1 || true; done
+    for s in $SERVICES minio proxy $SECOND; do docker rm -f durio-test-$s >/dev/null 2>&1 || true; done
     echo "testkit backend down (infra: $TEST_ENV down)"
 }
 
@@ -292,6 +339,7 @@ test) run_test ;;
 load) run_load ;;
 chaos) run_chaos ;;
 check) check ;;
+peer) run_peer ;;
 down) down ;;
-*) sed -n '2,16p' "$0"; exit 2 ;;
+*) sed -n '2,22p' "$0"; exit 2 ;;
 esac

@@ -22,6 +22,8 @@ rand.workspace = true
 
 [dev-dependencies]
 sha2.workspace = true
+# examples/peer.rs: the line protocol on stdin/stdout
+tokio = { workspace = true, features = ["io-std", "io-util"] }
 
 [lints]
 workspace = true
