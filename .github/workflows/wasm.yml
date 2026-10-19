@@ -64,11 +64,11 @@ jobs:
           F=durio-stoat-crypto-$V.tgz
           test -f "$F" || { echo "tag $TAG does not match the package version"; exit 1; }
           sha256sum -c "$F.sha256"
-          # aar.yml creates the release of the same tag: wait for it, else create it
-          for _ in $(seq 30); do gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 && break; sleep 20; done
-          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 ||
-            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "stoat-crypto $V" --notes "stoat-crypto $V"
-          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber "$F" "$F.sha256"
+          # aar.yml attaches the AAR to the same release: whichever job comes first creates it,
+          # the other one uploads into it (the AAR job also sets the notes)
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "stoat-crypto $V" \
+              --notes "stoat-crypto $V" "$F" "$F.sha256" ||
+            gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber "$F" "$F.sha256"
       - uses: actions/setup-node@v4
         if: vars.NPM_PUBLISH == 'true'
         with:

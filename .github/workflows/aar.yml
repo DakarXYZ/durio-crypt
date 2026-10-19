@@ -75,6 +75,12 @@ jobs:
           test -f dist/stoat-crypto-$V.aar || { echo "tag $TAG does not match the crate version"; exit 1; }
           (cd dist && sha256sum -c stoat-crypto-$V.aar.sha256)
           cp maven/io/github/dakarxyz/durio/stoat-crypto/$V/stoat-crypto-$V.pom dist/
-          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "stoat-crypto $V" \
-            --notes "AAR io.github.dakarxyz.durio:stoat-crypto:$V. SHA-256: $(cut -d' ' -f1 dist/stoat-crypto-$V.aar.sha256)" \
-            dist/stoat-crypto-$V.aar dist/stoat-crypto-$V.aar.sha256 dist/stoat-crypto-$V.pom
+          notes="AAR io.github.dakarxyz.durio:stoat-crypto:$V. SHA-256: $(cut -d' ' -f1 dist/stoat-crypto-$V.aar.sha256)"
+          files=(dist/stoat-crypto-$V.aar dist/stoat-crypto-$V.aar.sha256 dist/stoat-crypto-$V.pom)
+          # wasm.yml attaches the npm package to the same release: whichever job comes first
+          # creates it, the other one uploads into it
+          if ! gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "stoat-crypto $V" \
+              --notes "$notes" "${files[@]}"; then
+            gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber "${files[@]}"
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes "$notes"
+          fi
