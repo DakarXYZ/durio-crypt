@@ -39,7 +39,10 @@ jobs:
           java-version: "21"
       - uses: android-actions/setup-android@v3
         with:
-          packages: "platforms;android-37 build-tools;36.0.0"
+          # there is no "platforms;android-37" in the SDK repository (only android-37.0, 37.1, ...);
+          # the Gradle plugin installs the platform and build tools compileSdk needs
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
       - name: Rust libraries, size gate, bindings
         run: scripts/build-aar.sh native
         env:
