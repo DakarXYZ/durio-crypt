@@ -22,7 +22,7 @@ Steps (`scripts/build-aar.sh`):
    emulator to run: `./gradlew connectedAndroidTest`); maven layout in `build/maven/`; the AAR and its SHA-256 in
    `build/dist/`.
 
-Release: tag `vX.Y.Z` in `durio-crypt` → `.github/workflows/aar-release.yml` builds the same and attaches
+Release: tag `vX.Y.Z` in `durio-crypt` → `.github/workflows/aar.yml` builds the same and attaches
 `stoat-crypto-X.Y.Z.aar`, `.aar.sha256` and `.pom` to the GitHub Release (60-deploy §2.1).
 
 ## Contents and size
