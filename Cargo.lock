@@ -2847,7 +2847,7 @@ dependencies = [
 
 [[package]]
 name = "spike-msc"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "http",
@@ -2865,7 +2865,7 @@ dependencies = [
 
 [[package]]
 name = "spike-vodozemac"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "ruma",
@@ -2902,7 +2902,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "stoat-crypto"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "aes",
  "async-lock",
@@ -2931,7 +2931,7 @@ dependencies = [
 
 [[package]]
 name = "stoat-crypto-fakeserver"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "rand 0.8.8",
  "serde_json",
@@ -2940,7 +2940,7 @@ dependencies = [
 
 [[package]]
 name = "stoat-crypto-ffi"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "serde_json",
  "stoat-crypto",
@@ -2954,7 +2954,7 @@ dependencies = [
 
 [[package]]
 name = "stoat-crypto-proto"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "base64 0.22.1",
  "bs58",
@@ -2966,7 +2966,7 @@ dependencies = [
 
 [[package]]
 name = "stoat-crypto-testkit"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "futures-util",
  "rand 0.8.8",
@@ -2982,7 +2982,7 @@ dependencies = [
 
 [[package]]
 name = "stoat-crypto-wasm"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-lock",
  "getrandom 0.2.17",

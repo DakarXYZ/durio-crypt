@@ -27,17 +27,17 @@ Release: tag `vX.Y.Z` in `durio-crypt` → `.github/workflows/aar-release.yml` b
 
 ## Contents and size
 
-AAR 0.2.0 (2026-10-18, + key export/import, `debug_report`, own-request backoff): 11.8 MB (11 826 861 bytes; 0.1.0: 11.6 MB) — `jni/{arm64-v8a,armeabi-v7a,x86_64}/libstoat_crypto_ffi.so`, `classes.jar`
+AAR 0.2.1 (2026-10-19, to-device requests in order — SAS fix; 0.2.0: + key export/import, `debug_report`, own-request backoff): 11.8 MB (11 840 044 bytes; 0.1.0: 11.6 MB) — `jni/{arm64-v8a,armeabi-v7a,x86_64}/libstoat_crypto_ffi.so`, `classes.jar`
 (bindings, 0.4 MB), `proguard.txt` (= `consumer-rules.pro`), `AndroidManifest.xml`.
 
 | ABI | stripped | gzip -9 | limit (`check-so-size.sh`) | `LOAD` alignment |
 | --- | --- | --- | --- | --- |
-| arm64-v8a | 10 243 720 | 3 831 304 | 10 590 000 | 0x4000 |
-| armeabi-v7a | 6 599 512 | 3 374 920 | 6 821 000 | 0x1000 (32-bit: no 16 KB devices) |
-| x86_64 | 11 253 120 | 4 197 273 | 11 626 000 | 0x4000 |
+| arm64-v8a | 10 255 808 | 3 835 783 | 10 590 000 | 0x4000 |
+| armeabi-v7a | 6 606 896 | 3 378 823 | 6 821 000 | 0x1000 (32-bit: no 16 KB devices) |
+| x86_64 | 11 265 872 | 4 202 014 | 11 626 000 | 0x4000 |
 
 Limits unchanged since 0.1.0 (measured then: arm64 10 086 040, armeabi-v7a 6 495 560, x86_64 11 072 176 stripped);
-0.2.0 is +1.6 % on each ABI.
+0.2.1 is +1.7 % on each ABI.
 
 Profile `release-android` = release (fat LTO, one codegen unit, `strip`, `panic = "unwind"`) with `opt-level =
 "s"`. arm64 measured: `opt-level = 3` → 11.72 MB stripped / 5.25 MB gzip; `"s"` → 10.09 / 3.77; `"z"` → 9.33 /
@@ -56,7 +56,7 @@ bindings need itself:
 
 ```kotlin
 dependencies {
-    implementation("io.github.dakarxyz.durio:stoat-crypto:0.2.0@aar")
+    implementation("io.github.dakarxyz.durio:stoat-crypto:0.2.1@aar")
     implementation("net.java.dev.jna:jna:5.17.0@aar")          // libjnidispatch.so for every ABI; no JNA JAR
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
 }
@@ -83,9 +83,9 @@ dependencyResolutionManagement {
 and the checksum from `stoat-crypto-<v>.aar.sha256` in `gradle/verification-metadata.xml`:
 
 ```xml
-<component group="io.github.dakarxyz.durio" name="stoat-crypto" version="0.2.0">
-   <artifact name="stoat-crypto-0.2.0.aar">
-      <sha256 value="<sha256 from the release>" origin="durio-crypt release v0.2.0"/>
+<component group="io.github.dakarxyz.durio" name="stoat-crypto" version="0.2.1">
+   <artifact name="stoat-crypto-0.2.1.aar">
+      <sha256 value="<sha256 from the release>" origin="durio-crypt release v0.2.1"/>
    </artifact>
 </component>
 ```

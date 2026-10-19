@@ -28,13 +28,13 @@ feature matrix-sdk-crypto does not turn off).
 
 ## Size
 
-0.2.0 (2026-10-18), `stoat_crypto_wasm_bg.wasm` after `wasm-opt -Oz --strip-debug`:
+0.2.1 (2026-10-19), `stoat_crypto_wasm_bg.wasm` after `wasm-opt -Oz --strip-debug`:
 
 | Artifact | raw | gzip -9 | Limit (`check-wasm-size.sh`) | Budget C23 |
 | --- | --- | --- | --- | --- |
-| `stoat_crypto_wasm_bg.wasm` (core + IndexedDB store) | 3 779 022 | 1 422 205 (1.36 MiB) | raw 3 968 000, gzip 1 494 000 (+5 %) | ≤ 3 MiB gzip ✅ |
+| `stoat_crypto_wasm_bg.wasm` (core + IndexedDB store) | 3 784 786 | 1 423 479 (1.36 MiB) | raw 3 968 000, gzip 1 494 000 (+5 %) | ≤ 3 MiB gzip ✅ |
 | `stoat_crypto_wasm.js` (wasm-bindgen glue) | 88 463 | — | — | — |
-| npm tarball | 1 466 300 | — | — | — |
+| npm tarball | 1 471 761 | — | — | — |
 
 Reference: Element's `matrix-sdk-crypto-wasm` is 2.10 MB gzip; the CR-01 probe (part of the library reachable,
 IndexedDB) was 0.94 MB gzip — the real surface adds SAS, backup and secret storage, key export, our adapter and
