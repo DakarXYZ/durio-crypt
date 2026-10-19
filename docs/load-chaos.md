@@ -1,7 +1,7 @@
 # Нагрузка и хаос на стенде (этап 5, блок 5C-1)
 
-Прогон 2026-10-18: `stoat-crypto` `main` (коммиты `b2a1395`…`9e2937f`), бэкенд `stoatchat` ветки
-`durio/stage-2` (`5414a613`). Стенд — `scripts/testkit-backend.sh up`: debug-сборки delta, bonfire, autumn,
+Прогон 2026-10-18: `stoat-crypto` `main` (коммиты `f2cf0db`…`af9da8e`), бэкенд `stoatchat` ветки
+`durio/stage-2` (`8329034f`). Стенд — `scripts/testkit-backend.sh up`: debug-сборки delta, bonfire, autumn,
 pushd в Docker (по 1 ГиБ на контейнер), MongoDB rs0, Redis 7, RabbitMQ 4, MinIO; второй сервер для T14
 (свои mongo rs1, redis, rabbit, delta2, bonfire2). Машина разработчика, 16 ГиБ на Docker, 22 ядра. testkit —
 тоже debug-сборка ядра (`cargo nextest`, профиль `test`).
@@ -156,17 +156,17 @@ duplicate key → `?` прерывает `ProcessMessage`: упоминания 
 
 ## 5. До включения `features.e2ee` в проде
 
-1. **B1** — исправлено в `stoatchat` `durio/stage-5` (9bb9b3a1): AMQP переподключается при ошибке
+1. **B1** — исправлено в `stoatchat` `durio/stage-5` (589a78ce): AMQP переподключается при ошибке
    публикации (backoff 0,5–30 с), pushd следит за соединением и заново поднимает потребителей; событие
    больше не роняет запрос. В self-hosted всё равно `restart: unless-stopped`.
-2. **B2** — исправлено (ce44f7c5): Redis в `EventV1::p` без паники (3 попытки, потом лог), лимитер
+2. **B2** — исправлено (71f88cc3): Redis в `EventV1::p` без паники (3 попытки, потом лог), лимитер
    fail-open без Redis, повтор `nonce`/`Idempotency-Key` того же автора в том же канале → 200 с уже
    сохранённым сообщением. 400 `InvalidOperation`/409 остаются для гонки с первым запросом и после
    рестарта delta — outbox клиента по-прежнему трактует их как «вероятно, отправлено» → перечитать канал.
-3. **B3** — исправлено (2fbf9690, b223a7f9): bonfire закрывает сокет при любой ошибке/переподключении
+3. **B3** — исправлено (0b323897, 577f1367): bonfire закрывает сокет при любой ошибке/переподключении
    подписчика Redis (QUIT ограничен 2 с — он и вешал слушателя). Клиентам — переподключение + проход ящика;
    страховочный проход раз в минуту на переднем плане оставить.
-4. **B4** — исправлено (580be38a): upsert повторяется при E11000, пачка не прерывается.
+4. **B4** — исправлено (50f96ec2): upsert повторяется при E11000, пачка не прерывается.
 
 Повторный прогон на `durio/stage-5`: хаос (Redis ×7, RabbitMQ, bonfire, delta) и нагрузка 3/3 — без 5xx, паник
 и ошибок сервисов. `push_delivered_pushd_not_restarted` в `chaos_rabbit_restart` остаётся `false` из-за

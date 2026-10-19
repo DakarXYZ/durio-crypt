@@ -92,7 +92,7 @@
 - K1. `cargo deny check` (advisories, лицензии, источники) зелёный; пины `=0.19.1`; новых крейтов в
   продуктовом графе нет без записи в ADR.
 
-## 2. Проход 1 — блок 5A, 2026-10-18 (коммиты до `e745394` + этот)
+## 2. Проход 1 — блок 5A, 2026-10-18 (коммиты до `f0e3c1e` + этот)
 
 | Пункт | Итог | Где | Доказательство |
 | --- | --- | --- | --- |
@@ -118,7 +118,7 @@
 | E5 | ❌→✅ | список был неполон: `EncryptedAttachment.fileJson` (ключ AES), `DecryptResult.Decrypted` (оборачивает `DecryptedMessage`), `KeyExport` — находка R2 | документация FFI `lib.rs`, `types.rs` |
 | F1 | ❌→✅ | `Debug` машины выводил всё состояние (id участников и ящика, шифротекст повторов и ожидающих ключа событий) — находка R1 | `machine_debug_names_the_account_only` |
 | F2 | ✅ | `diagnostics.rs` | `debug_report_has_no_secrets`, `key_export_and_import` (FFI) |
-| F3 | ✅ | подписчика `tracing` в ядре и FFI нет; в хосте — не ниже `WARN`, правило в Android (O-6, for-android `e9f2fb0a`) | `check-crypto-hygiene.sh` (Android) |
+| F3 | ✅ | подписчика `tracing` в ядре и FFI нет; в хосте — не ниже `WARN`, правило в Android (O-6, for-android `5f43fb84`) | `check-crypto-hygiene.sh` (Android) |
 | G1 | ✅ | `store.rs` (`StoreKey`), `backup.rs:84-92` (`RecoveryState: ZeroizeOnDrop`), `:450`, `:568`, `proto/recovery_key.rs`, `attachments.rs`, FFI `secret_string` | `debug_has_no_key`, `setup_debug_has_no_key` |
 | H1 | ✅ | `attachments.rs:169` (`ct_eq`); MAC — `matrix-sdk-crypto` (`verify_mac`, `SecretStorageKey::decrypt`) | `swapped_or_truncated_blob_yields_no_plaintext` |
 | I1 | ✅ | `Cargo.toml` `[workspace.lints.rust] unsafe_code = "forbid"`; у всех крейтов `lints.workspace = true` | компиляция |
@@ -130,21 +130,21 @@
 
 | # | Что | Итог |
 | --- | --- | --- |
-| R1 | `#[derive(Debug)]` у `CryptoMachine` (и пробрасывающий его FFI-объект) печатал внутреннее состояние: id участников каналов, id ящика, тела повторов to_device и зашифрованные события, ждущие запроса ключа | исправлено `e745394`, тест `machine_debug_names_the_account_only` |
+| R1 | `#[derive(Debug)]` у `CryptoMachine` (и пробрасывающий его FFI-объект) печатал внутреннее состояние: id участников каналов, id ящика, тела повторов to_device и зашифрованные события, ждущие запроса ключа | исправлено `f0e3c1e`, тест `machine_debug_names_the_account_only` |
 | R2 | Документация FFI называла «не логировать» только `DecryptedMessage`, `StoreConfig`, `RecoverySetup`; `toString()` Kotlin-записей `EncryptedAttachment` (ключ AES в `fileJson`), `DecryptResult.Decrypted` и `KeyExport` тоже нельзя логировать | исправлено (документация, этот коммит); правило линтера в Android — O-5 |
 
 ## 4. Открытые пункты прохода 1 — закрыты (блок 5A, дополнение, 2026-10-18)
 
 | # | Решение | Коммит | Тест |
 | --- | --- | --- | --- |
-| O-1 | ✅ PBKDF2-тяжёлые вызовы FFI (`export_room_keys`, `import_room_keys`, `unlock_backup`, `create_recovery` с паролем) — на блокирующем пуле рантайма (`runtime.rs::run_blocking`), оба рабочих потока свободны | `76498ae` | `blocking_work_leaves_the_workers_free` |
-| O-2 | ✅ Свои запросы ядра после неудачи — пауза `own_retry_ms` (1 с ×2, ≤ 15 мин, в `wakeup_in_ms`); после 3 постоянных отказов (4xx кроме 401/408/429) — выброшены, `RequestRejected`, `debug_report.requests.rejected`; выброшенный `SecretPut` уходит и из очереди в хранилище; повтор полного ящика при постоянном отказе сдаёт устройства. ADR A8, контракт хоста в документации крейта | `31fa59b`, `ff0b20f` | `own_requests_back_off_then_are_dropped`, `retries_refused_for_good_give_up_their_devices`, `own_requests_refused_for_good_are_dropped` |
-| O-3 | ✅ `set_device_trust(Verified)` в ядре оставлен для тестов; контракт хоста, ядро и FFI явно говорят — хост ставит только `Unverified`/`Blocked`, `Verified` даёт SAS `Done`. Android закрыл: `E2eeTrust` без `Verified`, `:core:crypto` переводит только два значения, `check-crypto-hygiene.sh` отвергает `Trust.VERIFIED` вне сравнений (for-android `d71a423b`) | `c6e463d`, for-android `d71a423b` | `E2eeTrustTest`, `ManualTrustRealCoreTest` (Android) |
-| O-4 | ✅ `in_reply_to` и `replies` сравниваются как множества: бэкенд убирает повторы id (`stoatchat` `messages/model.rs`, первое вхождение), порядок сохраняет — повтор id в `in_reply_to` давал ложный `reply_mismatch`; лишний/пропавший id по-прежнему помечается. `protocol.md` дополнен | `d6a583e` | `replies_compare_as_sets`, `s07_server_tampering` |
-| O-5 | ✅ Android: `check-crypto-hygiene.sh` перечисляет UniFFI-типы с секретами в `toString()` (`DecryptResult`, `DecryptedMessage`, `RecoverySetup`, `EncryptedAttachment`, `KeyExport`, `StoreConfig`) и держит их в `:core:crypto` (он не логирует и не строит строки); секретные типы фасада — не `data class`; логи E2EE/push не интерполируют результаты расшифровки, файлы ключей, пароли, отчёты (for-android `e9f2fb0a`) | for-android `e9f2fb0a` | `SecretToStringTest` (Android) |
-| O-6 | ✅ ядро и FFI подписчика `tracing` не ставят и ничего не пишут; в Android моста `tracing` → Logcat нет, будущий мост проверка отвергнет, пока он не ограничен `WARN` (for-android `e9f2fb0a`) | for-android `e9f2fb0a` | `check-crypto-hygiene.sh` (Android) |
-| O-7 | ✅ Разбор заголовка — `proto::key_export::parse` (нормализация base64 без паддинга), ядро вызывает его до библиотеки; fuzz-цель `key_export` (+ в `fuzz.yml`): 60 с, 11,9 M запусков, падений нет | `7208cc8` | `header_fields_are_checked`, `overlapping_armor_is_refused` |
-| O-8 | ✅ Предел файла экспорта 64 МиБ (`key_export::MAX_FILE_LEN`, ≈ 90 000 сессий): длиннее — `InvalidKeyFile` до любой обработки; экспорт сверх предела не пишется (`InvalidKeyFile`: экспортировать меньше каналов) | `2d02958` | `oversized_files_are_refused_first`, `wrong_passphrase_or_broken_file` |
+| O-1 | ✅ PBKDF2-тяжёлые вызовы FFI (`export_room_keys`, `import_room_keys`, `unlock_backup`, `create_recovery` с паролем) — на блокирующем пуле рантайма (`runtime.rs::run_blocking`), оба рабочих потока свободны | `c3c9ecd` | `blocking_work_leaves_the_workers_free` |
+| O-2 | ✅ Свои запросы ядра после неудачи — пауза `own_retry_ms` (1 с ×2, ≤ 15 мин, в `wakeup_in_ms`); после 3 постоянных отказов (4xx кроме 401/408/429) — выброшены, `RequestRejected`, `debug_report.requests.rejected`; выброшенный `SecretPut` уходит и из очереди в хранилище; повтор полного ящика при постоянном отказе сдаёт устройства. ADR A8, контракт хоста в документации крейта | `e72321a`, `4508fa8` | `own_requests_back_off_then_are_dropped`, `retries_refused_for_good_give_up_their_devices`, `own_requests_refused_for_good_are_dropped` |
+| O-3 | ✅ `set_device_trust(Verified)` в ядре оставлен для тестов; контракт хоста, ядро и FFI явно говорят — хост ставит только `Unverified`/`Blocked`, `Verified` даёт SAS `Done`. Android закрыл: `E2eeTrust` без `Verified`, `:core:crypto` переводит только два значения, `check-crypto-hygiene.sh` отвергает `Trust.VERIFIED` вне сравнений (for-android `243e02d4`) | `cf40266`, for-android `243e02d4` | `E2eeTrustTest`, `ManualTrustRealCoreTest` (Android) |
+| O-4 | ✅ `in_reply_to` и `replies` сравниваются как множества: бэкенд убирает повторы id (`stoatchat` `messages/model.rs`, первое вхождение), порядок сохраняет — повтор id в `in_reply_to` давал ложный `reply_mismatch`; лишний/пропавший id по-прежнему помечается. `protocol.md` дополнен | `73870cb` | `replies_compare_as_sets`, `s07_server_tampering` |
+| O-5 | ✅ Android: `check-crypto-hygiene.sh` перечисляет UniFFI-типы с секретами в `toString()` (`DecryptResult`, `DecryptedMessage`, `RecoverySetup`, `EncryptedAttachment`, `KeyExport`, `StoreConfig`) и держит их в `:core:crypto` (он не логирует и не строит строки); секретные типы фасада — не `data class`; логи E2EE/push не интерполируют результаты расшифровки, файлы ключей, пароли, отчёты (for-android `5f43fb84`) | for-android `5f43fb84` | `SecretToStringTest` (Android) |
+| O-6 | ✅ ядро и FFI подписчика `tracing` не ставят и ничего не пишут; в Android моста `tracing` → Logcat нет, будущий мост проверка отвергнет, пока он не ограничен `WARN` (for-android `5f43fb84`) | for-android `5f43fb84` | `check-crypto-hygiene.sh` (Android) |
+| O-7 | ✅ Разбор заголовка — `proto::key_export::parse` (нормализация base64 без паддинга), ядро вызывает его до библиотеки; fuzz-цель `key_export` (+ в `fuzz.yml`): 60 с, 11,9 M запусков, падений нет | `3076af4` | `header_fields_are_checked`, `overlapping_armor_is_refused` |
+| O-8 | ✅ Предел файла экспорта 64 МиБ (`key_export::MAX_FILE_LEN`, ≈ 90 000 сессий): длиннее — `InvalidKeyFile` до любой обработки; экспорт сверх предела не пишется (`InvalidKeyFile`: экспортировать меньше каналов) | `e822c20` | `oversized_files_are_refused_first`, `wrong_passphrase_or_broken_file` |
 
 Строки таблицы §2 обновлены: E1 (`run_blocking`), J1 (`key_export.rs`, предел файла), J2 (цель `key_export`),
 D4 (отказы своих запросов), B1–B5 (ответы как множества).
