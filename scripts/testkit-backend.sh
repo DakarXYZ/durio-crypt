@@ -39,7 +39,7 @@ CADDY_IMAGE=caddy:2.10.2-alpine
 PUBLIC_PORT=${TESTKIT_PUBLIC_PORT:-}
 winpath() { (cd "$1" && (pwd -W 2>/dev/null || pwd)); }
 running() { [ "$(docker container inspect -f '{{.State.Running}}' "$1" 2>/dev/null)" = true ]; }
-# a container that did not come up: its state (OOMKilled on a busy CI runner) and the end of its log
+# a container that did not come up: its state and the end of its log
 died() {
     echo "$1 did not start: $(docker container inspect -f 'status={{.State.Status}} oom={{.State.OOMKilled}} exit={{.State.ExitCode}}' "durio-test-$1" 2>&1)" >&2
     docker logs --tail 30 "durio-test-$1" >&2 2>&1 || true
@@ -128,7 +128,7 @@ up() {
         sleep 1
     done
     # T11: the test consumer reads the outbound push routing key over HTTP
-    docker exec durio-test-rabbit rabbitmq-plugins enable --quiet rabbitmq_management >/dev/null
+    docker exec -u rabbitmq durio-test-rabbit rabbitmq-plugins enable --quiet rabbitmq_management >/dev/null
 
     start_services "" $SERVICES
     wait_delta durio-test-delta
@@ -153,15 +153,19 @@ up_second() {
         until docker exec durio-test-mongo2 mongosh --quiet --eval \
             'try { rs.status().ok } catch (e) { rs.initiate({_id: "rs1", members: [{_id: 0, host: "durio-test-mongo2:27017"}]}).ok }' \
             2>/dev/null | grep -q 1; do
-            i=$((i + 1)); [ $i -lt 180 ] || died mongo2
+            running durio-test-mongo2 || died mongo2
+            i=$((i + 1)); [ $i -lt 60 ] || died mongo2
             sleep 1
         done
         i=0
-        until docker exec durio-test-rabbit2 rabbitmq-diagnostics -q check_running >/dev/null 2>&1; do
-            i=$((i + 1)); [ $i -lt 180 ] || died rabbit2
+        # the CLI as the rabbitmq user: run as root before the server is up, it creates
+        # ~/.erlang.cookie owned by root and the server dies on eacces
+        until docker exec -u rabbitmq durio-test-rabbit2 rabbitmq-diagnostics -q check_running >/dev/null 2>&1; do
+            running durio-test-rabbit2 || died rabbit2
+            i=$((i + 1)); [ $i -lt 60 ] || died rabbit2
             sleep 1
         done
-        docker exec durio-test-rabbit2 rabbitmqctl eval 'rabbit_exchange:declare(rabbit_misc:r(<<"/">>, exchange,
+        docker exec -u rabbitmq durio-test-rabbit2 rabbitmqctl eval 'rabbit_exchange:declare(rabbit_misc:r(<<"/">>, exchange,
             <<"revolt.default">>), topic, true, false, false, [], <<"rabbituser">>).' >/dev/null
     fi
     start_services 2 delta bonfire
@@ -264,7 +268,7 @@ run_chaos() {
             if [ "$action" != stop ]; then
                 case $target in
                 delta) wait_delta durio-test-delta ;;
-                rabbit) until docker exec durio-test-rabbit rabbitmq-diagnostics -q check_running >/dev/null 2>&1; do sleep 1; done ;;
+                rabbit) until docker exec -u rabbitmq durio-test-rabbit rabbitmq-diagnostics -q check_running >/dev/null 2>&1; do sleep 1; done ;;
                 esac
             fi
             mv "$req" "${req%.req}.done"
