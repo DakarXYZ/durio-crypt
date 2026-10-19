@@ -271,7 +271,13 @@ impl CryptoMachine {
 
     /// A to-device request of the core itself (verification, cancellations)
     pub(crate) async fn add_own_request(&self, r: OutgoingRequest) {
-        self.inner.outbox.lock().await.add_own(r);
+        let mut ob = self.inner.outbox.lock().await;
+        // the library's pending requests come first in the to-device order
+        // (a verification step it made before this one); a store error only
+        // costs the order, the next pass refreshes again
+        let _ = self.refresh(&mut ob, false).await;
+        ob.add_own(r);
+        drop(ob);
         self.touch();
     }
 
@@ -371,6 +377,7 @@ impl CryptoMachine {
             }
         }
         out.extend(ob.own_and_due());
+        ob.order(&mut out);
         drop(ob);
         // CR-12: the next batch of room keys for the backup (one in flight;
         // the library hands out the same request until it is marked)

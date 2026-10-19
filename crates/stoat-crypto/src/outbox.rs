@@ -164,6 +164,12 @@ pub(crate) struct Outbox {
     /// Own requests and retries dropped after permanent refusals
     rejected: VecDeque<Rejected>,
     pub(crate) retries: Retries,
+    /// Order of to-device requests, own and the library's, by when the core
+    /// first saw them: a verification step must not overtake the one before
+    /// (`done` before our `mac` stalled SAS on the other side)
+    next_seq: u64,
+    /// Library to-device request id → its place in that order
+    seen: HashMap<String, u64>,
 }
 
 #[derive(Debug)]
@@ -172,6 +178,7 @@ struct Own {
     failures: u32,
     rejections: u32,
     due_ms: u64,
+    seq: u64,
 }
 
 /// A request of the core the server kept refusing (review O-2)
@@ -222,6 +229,13 @@ impl Outbox {
                 _ => self.upload = Some(r.clone()),
             }
         }
+        self.seen.retain(|id, _| fresh.iter().any(|r| &r.id == id));
+        for r in fresh.iter().filter(|r| r.kind == RequestKind::ToDevice) {
+            if !self.seen.contains_key(&r.id) {
+                self.seen.insert(r.id.clone(), self.next_seq);
+                self.next_seq += 1;
+            }
+        }
         self.cached = fresh;
         self.refreshed_ms = now_ms();
     }
@@ -245,6 +259,8 @@ impl Outbox {
     }
 
     pub(crate) fn add_own(&mut self, r: OutgoingRequest) {
+        let seq = self.next_seq;
+        self.next_seq += 1;
         self.own.insert(
             r.id.clone(),
             Own {
@@ -252,8 +268,26 @@ impl Outbox {
                 failures: 0,
                 rejections: 0,
                 due_ms: 0,
+                seq,
             },
         );
+    }
+
+    /// To-device requests in the order the core first saw them (own and the
+    /// library's, parts with their request); everything else first, as it
+    /// was; retries last
+    pub(crate) fn order(&self, out: &mut [OutgoingRequest]) {
+        out.sort_by_key(|r| {
+            if r.kind != RequestKind::ToDevice {
+                return 0;
+            }
+            let id = self.part_of.get(&r.id).unwrap_or(&r.id);
+            match (self.own.get(id), self.seen.get(id)) {
+                (Some(o), _) => o.seq + 1,
+                (None, Some(seq)) => seq + 1,
+                (None, None) => u64::MAX,
+            }
+        });
     }
 
     /// Requests as the client must send them: parts instead of oversized
@@ -559,6 +593,40 @@ mod tests {
             id.into(),
             json!({ "type": "m.room.encrypted", "messages": { "@u:stoat.invalid": msgs } }).to_string(),
         )
+    }
+
+    fn verification(id: &str, kind: &str) -> OutgoingRequest {
+        to_device(
+            id.into(),
+            json!({ "type": kind, "messages": { "@u:stoat.invalid": { "D": {} } } }).to_string(),
+        )
+    }
+
+    #[test]
+    fn to_device_keeps_the_order_the_core_saw() {
+        let mut ob = Outbox::default();
+        let query = OutgoingRequest {
+            id: "q".into(),
+            kind: RequestKind::KeysQuery,
+            method: "POST",
+            path: paths::KEYS_QUERY.into(),
+            body: "{}".into(),
+        };
+        // the library's `key`, then our `mac` (confirm), then the library's
+        // `done` made when the other side's MAC came in
+        ob.refreshed(vec![verification("key", "m.key.verification.key")]);
+        ob.add_own(verification("mac", "m.key.verification.mac"));
+        ob.add_own(verification("cancel", "m.key.verification.cancel"));
+        ob.refreshed(vec![
+            verification("done", "m.key.verification.done"),
+            query.clone(),
+            verification("key", "m.key.verification.key"),
+        ]);
+        let mut out = ob.cached.clone();
+        out.extend(ob.own_and_due());
+        ob.order(&mut out);
+        let ids: Vec<&str> = out.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, ["q", "key", "mac", "cancel", "done"]);
     }
 
     #[test]
