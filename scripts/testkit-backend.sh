@@ -162,7 +162,7 @@ up() {
 up_second() {
     if ! running durio-test-mongo2; then
         docker rm -f durio-test-mongo2 durio-test-redis2 durio-test-rabbit2 >/dev/null 2>&1 || true
-        docker run -d --name durio-test-mongo2 --network $NET --memory 768m mongo:8 \
+        docker run -d --name durio-test-mongo2 --network $NET --memory 768m mongo:7.0.45 \
             --replSet rs1 --bind_ip_all --wiredTigerCacheSizeGB 0.25 >/dev/null
         docker run -d --name durio-test-redis2 --network $NET --memory 128m redis:7-alpine >/dev/null
         docker run -d --name durio-test-rabbit2 --network $NET --memory 512m \
