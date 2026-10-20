@@ -101,6 +101,23 @@ start_services() {
     rm -f "$env_file"
 }
 
+# The infra mongo of server 1 can be gone after the build (a busy CI runner: the
+# OOM killer picks mongod while cargo links); the services then fail on its name.
+# Say so with its state and log, start it again and wait for the primary.
+ensure_mongo() {
+    running durio-test-mongo && return 0
+    echo "durio-test-mongo stopped: $(docker container inspect -f 'status={{.State.Status}} oom={{.State.OOMKilled}} exit={{.State.ExitCode}}' durio-test-mongo 2>&1)" >&2
+    docker logs --tail 30 durio-test-mongo >&2 2>&1 || true
+    docker start durio-test-mongo >/dev/null || sh "$TEST_ENV" up
+    i=0
+    until docker exec durio-test-mongo mongosh --quiet --eval 'db.hello().isWritablePrimary' 2>/dev/null | grep -q true; do
+        running durio-test-mongo || died mongo
+        i=$((i + 1)); [ $i -lt 60 ] || died mongo
+        sleep 1
+    done
+    echo "durio-test-mongo started again" >&2
+}
+
 wait_delta() {
     i=0
     until docker run --rm --network $NET alpine:3.22 wget -qO- "http://$1:14702/" 2>/dev/null | grep -q '"e2ee"'; do
@@ -130,6 +147,7 @@ up() {
     # T11: the test consumer reads the outbound push routing key over HTTP
     docker exec -u rabbitmq durio-test-rabbit rabbitmq-plugins enable --quiet rabbitmq_management >/dev/null
 
+    ensure_mongo
     start_services "" $SERVICES
     wait_delta durio-test-delta
     [ "${TESTKIT_SECOND:-1}" = 0 ] || up_second
