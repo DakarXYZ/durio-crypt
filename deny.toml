@@ -20,6 +20,9 @@ ignore = [
     # unmaintained, no fix; only in the wasm build through matrix-sdk-indexeddb
     # (matrix_indexed_db_futures -> wasm_evt_listener). Revisit on library upgrade.
     { id = "RUSTSEC-2024-0388", reason = "transitive via matrix-sdk-indexeddb 0.19.1, wasm only" },
+    # unmaintained, no fix; build-time only (proc-macro config parsing) through
+    # uniffi -> uniffi_bindgen -> askama_derive. Revisit on uniffi upgrade.
+    { id = "RUSTSEC-2026-0374", reason = "basic-toml via askama_derive in uniffi 0.32.2, build-time only" },
 ]
 
 [licenses]
