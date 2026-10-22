@@ -826,3 +826,87 @@ async fn sas_own_device_cancelled_by_user() {
     assert!(h2.accept().await.is_err());
     assert!(a1.m().verifications().is_empty() && a2.m().verifications().is_empty());
 }
+
+/// Both devices ask each other at once. The library cancels both requests
+/// (two requests with one user); the device with the smaller id asks again,
+/// the other accepts that request by itself, and both handles follow it to
+/// a verified device.
+#[tokio::test]
+async fn sas_crossed_requests_become_one_flow() {
+    let srv = server();
+    let mut a1 = Device::login(&srv, "A", "A1").await;
+    let mut a2 = Device::login(&srv, "A", "A2").await;
+    sync_all(&mut [&mut a1, &mut a2]).await;
+
+    let h1 = a1
+        .m()
+        .request_verification(&a2.auth.user, &a2.auth.device)
+        .await
+        .unwrap();
+    let h2 = a2
+        .m()
+        .request_verification(&a1.auth.user, &a1.auth.device)
+        .await
+        .unwrap();
+    for _ in 0..4 {
+        a1.sync().await;
+        a2.sync().await;
+    }
+    assert_eq!((h1.state(), h2.state()), (SasState::Ready, SasState::Ready));
+    // no extra dialog: the request of the other device was not left incoming
+    for d in [&a1, &a2] {
+        assert!(
+            d.m()
+                .verifications()
+                .iter()
+                .all(|h| h.state() != SasState::Incoming)
+        );
+    }
+
+    // both asked, so both may start at once (Android starts on the asking
+    // side by itself); the library keeps one of the two starts
+    let winner = if a1.auth.device < a2.auth.device { &h1 } else { &h2 };
+    h1.start().await.unwrap();
+    h2.start().await.unwrap();
+    for _ in 0..3 {
+        a1.sync().await;
+        a2.sync().await;
+    }
+    assert!(matches!(winner.state(), SasState::ShowCodes { .. }), "{:?}", winner.state());
+    assert_eq!(h1.state(), h2.state());
+    h1.confirm().await.unwrap();
+    h2.confirm().await.unwrap();
+    sync_all(&mut [&mut a1, &mut a2]).await;
+    assert_eq!((h1.state(), h2.state()), (SasState::Done, SasState::Done));
+    for (d, other) in [(&a1, &a2), (&a2, &a1)] {
+        let trust = d
+            .m()
+            .devices(&other.auth.user)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|x| x.device_id == other.auth.device)
+            .unwrap()
+            .trust;
+        assert_eq!(trust, Trust::Verified);
+    }
+}
+
+/// Only one device asked: the other one's own later request (without a
+/// crossing) is not accepted by itself
+#[tokio::test]
+async fn sas_request_is_not_accepted_without_the_user() {
+    let srv = server();
+    let mut a1 = Device::login(&srv, "A", "A1").await;
+    let mut a2 = Device::login(&srv, "A", "A2").await;
+    sync_all(&mut [&mut a1, &mut a2]).await;
+
+    let h1 = a1
+        .m()
+        .request_verification(&a2.auth.user, &a2.auth.device)
+        .await
+        .unwrap();
+    sync_all(&mut [&mut a1, &mut a2]).await;
+    assert_eq!(a2.last_verification().state(), SasState::Incoming);
+    assert_eq!(h1.state(), SasState::Requested);
+}

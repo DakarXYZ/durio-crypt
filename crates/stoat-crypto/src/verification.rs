@@ -19,6 +19,11 @@
 //!   runs the collection and sends the `m.timeout` cancel.
 //! * **One acceptance**: a SAS started by the other side of a request we
 //!   accepted is accepted automatically (the user already said yes).
+//! * **Crossed requests**: when two devices ask each other at once, the
+//!   library cancels both (two requests with one user). The device with the
+//!   smaller `(user, device)` asks again, the other accepts that request by
+//!   itself (its user asked for the same verification), and the handles of
+//!   both cancelled requests follow the new flow.
 //! * Done → the device is verified locally (`Trust::Verified`), which drives
 //!   the shield and key forwarding between own devices (CR-08). Without
 //!   cross-signing nothing is uploaded (v1.1).
@@ -37,12 +42,19 @@ use serde_json::Value;
 use crate::error::{CryptoError, Result};
 use crate::ids;
 use crate::machine::CryptoMachine;
+use crate::outbox;
 use crate::requests;
 
 /// While a verification is active the host passes at least this often
 pub const POLL_MS: u64 = 10_000;
 /// Flows remembered for their last state (terminal ones are evicted first)
 const MAX_FLOWS: usize = 64;
+/// How long a request we sent is matched against a crossing one: two
+/// devices asking at once cross within seconds; a request of that device
+/// minutes later is a new one
+const INTENT_MS: u64 = 2 * 60 * 1000;
+/// Requests of ours remembered for a crossing
+const MAX_INTENTS: usize = 8;
 
 /// The 64 SAS emoji of the Matrix spec (`sas-emoji.json`): symbol and the
 /// English description, which is the translation key of the clients' own
@@ -176,16 +188,72 @@ struct Flow {
     id: String,
     user: OwnedUserId,
     last: SasState,
+    /// A crossing cancelled this flow; the verification goes on in that one
+    replaced_by: Option<String>,
+}
+
+/// A request we sent, kept to recognise the other device asking at once
+#[derive(Clone, Debug)]
+struct Intent {
+    user: OwnedUserId,
+    device: String,
+    flow: String,
+    at_ms: u64,
+    /// We lost the tie-break: the other device's new request is accepted
+    waiting: bool,
 }
 
 /// Flows seen by this machine and their last state (the library forgets a
-/// flow once it is done or cancelled)
+/// flow once it is done or cancelled), and our recent requests
 #[derive(Debug, Default)]
-pub(crate) struct Flows(VecDeque<Flow>);
+pub(crate) struct Flows(VecDeque<Flow>, VecDeque<Intent>);
 
 impl Flows {
     fn get(&self, flow: &str) -> Option<&Flow> {
         self.0.iter().find(|f| f.id == flow)
+    }
+
+    /// The flow a verification goes on in: `flow` or the one that replaced it
+    fn resolve(&self, flow: &str) -> String {
+        let mut id = flow.to_owned();
+        for _ in 0..MAX_INTENTS {
+            match self.get(&id).and_then(|f| f.replaced_by.clone()) {
+                Some(next) => id = next,
+                None => break,
+            }
+        }
+        id
+    }
+
+    fn replace(&mut self, old: &str, new: &str) {
+        if let Some(f) = self.0.iter_mut().find(|f| f.id == old) {
+            f.replaced_by = Some(new.to_owned());
+        }
+    }
+
+    fn remember_intent(&mut self, user: OwnedUserId, device: String, flow: String) {
+        self.1.retain(|i| !(i.user == user && i.device == device));
+        if self.1.len() >= MAX_INTENTS {
+            self.1.pop_front();
+        }
+        self.1.push_back(Intent {
+            user,
+            device,
+            flow,
+            at_ms: outbox::now_ms(),
+            waiting: false,
+        });
+    }
+
+    fn intent(&mut self, user: &ruma::UserId, device: &str) -> Option<&mut Intent> {
+        let now = outbox::now_ms();
+        self.1.retain(|i| now.saturating_sub(i.at_ms) < INTENT_MS);
+        self.1.iter_mut().find(|i| i.user == user && i.device == device)
+    }
+
+    /// The user cancelled (or the flow ended): no crossing for it any more
+    fn forget_intent(&mut self, flow: &str) {
+        self.1.retain(|i| i.flow != flow);
     }
 
     fn insert(&mut self, id: String, user: OwnedUserId, state: SasState) {
@@ -197,11 +265,16 @@ impl Flows {
             let i = self.0.iter().position(|f| f.last.is_terminal()).unwrap_or(0);
             self.0.remove(i);
         }
-        self.0.push_back(Flow { id, user, last: state });
+        self.0.push_back(Flow {
+            id,
+            user,
+            last: state,
+            replaced_by: None,
+        });
     }
 
     pub(crate) fn any_active(&self) -> bool {
-        self.0.iter().any(|f| !f.last.is_terminal())
+        self.0.iter().any(|f| f.replaced_by.is_none() && !f.last.is_terminal())
     }
 
     /// CR-22: (known, open)
@@ -225,6 +298,15 @@ fn cancelled(info: &CancelInfo) -> SasState {
         reason,
         code: code.as_str().to_owned(),
         by_us: info.cancelled_by_us(),
+    }
+}
+
+/// The other device's request of a crossing: a new request replaces it
+fn cancelled_crossing() -> SasState {
+    SasState::Cancelled {
+        reason: CancelReason::AcceptedElsewhere,
+        code: CancelCode::Accepted.as_str().to_owned(),
+        by_us: true,
     }
 }
 
@@ -299,12 +381,18 @@ impl SasHandle {
     /// outgoing one learns it from `ready`)
     pub fn other_device_id(&self) -> Option<String> {
         let olm = self.machine.olm();
-        if let Some(s) = olm.get_verification(&self.user, &self.flow_id).and_then(|v| v.sas_v1()) {
+        let id = self.current();
+        if let Some(s) = olm.get_verification(&self.user, &id).and_then(|v| v.sas_v1()) {
             return Some(s.other_device_id().to_string());
         }
-        olm.get_verification_request(&self.user, &self.flow_id)?
+        olm.get_verification_request(&self.user, &id)?
             .other_device_id()
             .map(|d| d.to_string())
+    }
+
+    /// The flow this handle's verification goes on in (a crossing replaces it)
+    fn current(&self) -> String {
+        self.machine.flows().resolve(&self.flow_id)
     }
 
     /// Verifying one of our own devices
@@ -316,16 +404,23 @@ impl SasHandle {
     /// non-final one becomes a timeout)
     pub fn state(&self) -> SasState {
         let olm = self.machine.olm();
-        let current = match olm.get_verification(&self.user, &self.flow_id).and_then(|v| v.sas_v1()) {
+        let id = self.current();
+        let current = match olm.get_verification(&self.user, &id).and_then(|v| v.sas_v1()) {
             Some(s) => Some(from_sas(&s)),
-            None => olm
-                .get_verification_request(&self.user, &self.flow_id)
-                .map(|r| from_request(&r)),
+            None => olm.get_verification_request(&self.user, &id).map(|r| from_request(&r)),
         };
         let mut flows = self.machine.flows();
+        // over (declined, timed out, done): a later request of that device is
+        // no crossing. Our own m.user cancel is how the library ends a crossing.
+        if let Some(s) = &current
+            && s.is_terminal()
+            && !matches!(s, SasState::Cancelled { by_us: true, code, .. } if code == CancelCode::User.as_str())
+        {
+            flows.forget_intent(&id);
+        }
         let state = match current {
             Some(s) => s,
-            None => match flows.get(&self.flow_id) {
+            None => match flows.get(&id) {
                 Some(f) if f.last.is_terminal() => f.last.clone(),
                 _ => SasState::Cancelled {
                     reason: CancelReason::Timeout,
@@ -334,18 +429,18 @@ impl SasHandle {
                 },
             },
         };
-        flows.insert(self.flow_id.clone(), self.user.clone(), state.clone());
+        flows.insert(id, self.user.clone(), state.clone());
         state
     }
 
     fn request(&self) -> Option<VerificationRequest> {
-        self.machine.olm().get_verification_request(&self.user, &self.flow_id)
+        self.machine.olm().get_verification_request(&self.user, &self.current())
     }
 
     fn sas(&self) -> Option<Box<Sas>> {
         self.machine
             .olm()
-            .get_verification(&self.user, &self.flow_id)
+            .get_verification(&self.user, &self.current())
             .and_then(|v| v.sas_v1())
     }
 
@@ -400,6 +495,8 @@ impl SasHandle {
 
     /// Cancel with `m.user` (any time before Done)
     pub async fn cancel(&self) -> Result<()> {
+        let id = self.current();
+        self.machine.flows().forget_intent(&id);
         let out = match self.sas() {
             Some(s) if !s.is_cancelled() && !s.is_done() => s.cancel(),
             _ => self.request().and_then(|r| r.cancel()),
@@ -426,14 +523,70 @@ impl CryptoMachine {
         }
         let (request, out) = device.request_verification_with_methods(vec![VerificationMethod::SasV1]);
         let flow_id = request.flow_id().as_str().to_owned();
-        self.flows()
-            .insert(flow_id.clone(), user_id.clone(), SasState::Requested);
+        {
+            let mut flows = self.flows();
+            flows.insert(flow_id.clone(), user_id.clone(), SasState::Requested);
+            flows.remember_intent(user_id.clone(), device_id.to_string(), flow_id.clone());
+        }
         self.queue_verification(Some(out)).await?;
         Ok(SasHandle {
             machine: self.clone(),
             user: user_id,
             flow_id,
         })
+    }
+
+    /// A request came in from a device we asked ourselves. If it crossed
+    /// ours (the library cancelled both), the smaller `(user, device)` asks
+    /// again and the other side accepts that new request for its user; the
+    /// flows of both cancelled requests are replaced by the new one. Returns
+    /// the flows whose handles changed.
+    async fn crossed_request(&self, user: &ruma::UserId, device: &str, flow: &str) -> Result<Vec<String>> {
+        let Some(intent) = self.flows().intent(user, device).cloned() else {
+            return Ok(vec![]);
+        };
+        if intent.flow == flow {
+            return Ok(vec![]);
+        }
+        let olm = self.olm();
+        if intent.waiting {
+            // the other device's new request: the user already said yes
+            let Some(r) = olm.get_verification_request(user, flow) else {
+                return Ok(vec![]);
+            };
+            if !matches!(r.state(), VerificationRequestState::Requested { .. }) {
+                return Ok(vec![]);
+            }
+            self.queue_verification(r.accept_with_methods(vec![VerificationMethod::SasV1]))
+                .await?;
+            let mut flows = self.flows();
+            flows.insert(flow.to_owned(), user.to_owned(), from_request(&r));
+            flows.replace(&intent.flow, flow);
+            flows.forget_intent(&intent.flow);
+            return Ok(vec![intent.flow]);
+        }
+        // a crossing: the library cancelled our request when theirs came in
+        // (and may have dropped it already, within the same mailbox page)
+        let crossed = match olm.get_verification_request(user, &intent.flow).map(|r| r.state()) {
+            None => true,
+            Some(VerificationRequestState::Cancelled(info)) => {
+                info.cancelled_by_us() && info.cancel_code() == &CancelCode::User
+            }
+            Some(_) => false,
+        };
+        if !crossed {
+            return Ok(vec![]);
+        }
+        // their request went with the crossing: no dialog for it
+        self.flows().insert(flow.to_owned(), user.to_owned(), cancelled_crossing());
+        let ours = (olm.user_id().as_str(), olm.device_id().as_str());
+        if ours < (user.as_str(), device) {
+            let again = self.request_verification(&ids::user_ulid(user).ok_or(CryptoError::UnknownDevice)?, device).await?;
+            self.flows().replace(&intent.flow, again.flow_id());
+        } else if let Some(i) = self.flows().intent(user, device) {
+            i.waiting = true;
+        }
+        Ok(vec![intent.flow])
     }
 
     /// A flow by id (from `ToDeviceResult::verifications` or an earlier
@@ -453,7 +606,7 @@ impl CryptoMachine {
             .flows()
             .0
             .iter()
-            .filter(|f| !f.last.is_terminal())
+            .filter(|f| f.replaced_by.is_none() && !f.last.is_terminal())
             .map(|f| (f.id.clone(), f.user.clone()))
             .collect();
         flows
@@ -506,6 +659,15 @@ impl CryptoMachine {
             let Ok(user) = ruma::UserId::parse(sender) else {
                 continue;
             };
+            if event["type"] == "m.key.verification.request"
+                && let Some(device) = event["content"]["from_device"].as_str()
+            {
+                for replaced in self.crossed_request(&user, device, flow).await? {
+                    if !touched.contains(&replaced) {
+                        touched.push(replaced);
+                    }
+                }
+            }
             let known = self.olm().get_verification_request(&user, flow).is_some()
                 || self.olm().get_verification(&user, flow).is_some();
             if !known {
@@ -517,6 +679,21 @@ impl CryptoMachine {
             if self.flows().get(flow).is_none() {
                 self.flows()
                     .insert(flow.to_owned(), user.to_owned(), SasState::Incoming);
+            }
+        }
+        // a handle of a replaced flow follows the new one: its id is reported too
+        let replaced: Vec<String> = {
+            let flows = self.flows();
+            flows
+                .0
+                .iter()
+                .filter(|f| f.replaced_by.is_some() && touched.contains(&flows.resolve(&f.id)))
+                .map(|f| f.id.clone())
+                .collect()
+        };
+        for id in replaced {
+            if !touched.contains(&id) {
+                touched.push(id);
             }
         }
         for flow in &touched {
