@@ -56,7 +56,7 @@ bindings need itself:
 
 ```kotlin
 dependencies {
-    implementation("io.github.dakarxyz.durio:stoat-crypto:0.2.1@aar")
+    implementation("io.github.dakarxyz.durio:stoat-crypto:0.2.2@aar")
     implementation("net.java.dev.jna:jna:5.17.0@aar")          // libjnidispatch.so for every ABI; no JNA JAR
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
 }
@@ -83,9 +83,9 @@ dependencyResolutionManagement {
 and the checksum from `stoat-crypto-<v>.aar.sha256` in `gradle/verification-metadata.xml`:
 
 ```xml
-<component group="io.github.dakarxyz.durio" name="stoat-crypto" version="0.2.1">
-   <artifact name="stoat-crypto-0.2.1.aar">
-      <sha256 value="<sha256 from the release>" origin="durio-crypt release v0.2.1"/>
+<component group="io.github.dakarxyz.durio" name="stoat-crypto" version="0.2.2">
+   <artifact name="stoat-crypto-0.2.2.aar">
+      <sha256 value="<sha256 from the release>" origin="durio-crypt release v0.2.2"/>
    </artifact>
 </component>
 ```
