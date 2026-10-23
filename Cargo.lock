@@ -2917,6 +2917,7 @@ dependencies = [
  "rand 0.10.3",
  "ruma",
  "rusqlite",
+ "rustix",
  "serde",
  "serde_json",
  "sha2",

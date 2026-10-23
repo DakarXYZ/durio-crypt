@@ -7,7 +7,7 @@
 //! `flock` semantics (per open file description), so a second open is refused
 //! within the same process as well as from another one.
 
-use std::fs::{File, OpenOptions, TryLockError};
+use std::fs::{File, OpenOptions};
 use std::path::Path;
 
 use crate::error::{CryptoError, Result};
@@ -31,11 +31,31 @@ impl StoreLock {
             .truncate(false)
             .open(dir.join(LOCK_FILE))
             .map_err(|_| CryptoError::Store("open lock file"))?;
-        match file.try_lock() {
-            Ok(()) => Ok(Self { _file: file }),
-            Err(TryLockError::WouldBlock) => Err(CryptoError::StoreLocked),
-            Err(TryLockError::Error(_)) => Err(CryptoError::Store("lock")),
-        }
+        try_lock(&file)?;
+        Ok(Self { _file: file })
+    }
+}
+
+/// `flock` itself: std's `File::try_lock` is not implemented for Android (Rust
+/// 1.96 answers "unsupported" there), which left every store unopenable. The
+/// same call on every unix, so the tests on Linux run what Android runs.
+#[cfg(unix)]
+fn try_lock(file: &File) -> Result<()> {
+    use rustix::fs::{FlockOperation, flock};
+    match flock(file, FlockOperation::NonBlockingLockExclusive) {
+        Ok(()) => Ok(()),
+        Err(rustix::io::Errno::WOULDBLOCK) => Err(CryptoError::StoreLocked),
+        Err(_) => Err(CryptoError::Store("lock")),
+    }
+}
+
+#[cfg(not(unix))]
+fn try_lock(file: &File) -> Result<()> {
+    use std::fs::TryLockError;
+    match file.try_lock() {
+        Ok(()) => Ok(()),
+        Err(TryLockError::WouldBlock) => Err(CryptoError::StoreLocked),
+        Err(TryLockError::Error(_)) => Err(CryptoError::Store("lock")),
     }
 }
 

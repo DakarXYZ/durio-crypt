@@ -30,6 +30,11 @@ rand_10.workspace = true
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 matrix-sdk-sqlite.workspace = true
 
+# CR-17 store lock: `flock` (std's `File::try_lock` is missing on Android);
+# already in the graph
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1.5", default-features = false, features = ["std", "fs"] }
+
 # for-web inside the Windows client (CR-14, stage 5): IndexedDB store
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 matrix-sdk-crypto = { workspace = true, features = ["js"] }
