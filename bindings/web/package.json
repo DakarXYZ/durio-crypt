@@ -1,6 +1,6 @@
 {
   "name": "@durio/stoat-crypto",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "dur.io crypto core (E2EE of direct messages and groups) as wasm in a Web Worker, for for-web inside the Windows client",
   "license": "Apache-2.0",
   "author": "DakarX",

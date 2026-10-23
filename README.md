@@ -70,7 +70,7 @@ scripts/testkit-backend.sh up && scripts/testkit-backend.sh test   # сцена�
   (Android берёт AAR отсюда и сверяет SHA-256 с пином в `gradle/verification-metadata.xml`);
 - `.github/workflows/wasm.yml` → `durio-stoat-crypto-X.Y.Z.tgz` + `.sha256` для for-web.
 
-Текущая версия — `0.2.2`. Публикация в npm по умолчанию выключена.
+Текущая версия — `0.2.3`. Публикация в npm по умолчанию выключена.
 
 Ошибки — [issues](https://github.com/DakarXYZ/durio-crypt/issues). Уязвимости — не в открытый issue: напишите
 владельцу через GitHub, без деталей в публичном доступе. Никогда не прикладывайте ключи, ключ восстановления и
