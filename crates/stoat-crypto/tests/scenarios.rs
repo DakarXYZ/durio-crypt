@@ -855,12 +855,7 @@ async fn sas_crossed_requests_become_one_flow() {
     assert_eq!((h1.state(), h2.state()), (SasState::Ready, SasState::Ready));
     // no extra dialog: the request of the other device was not left incoming
     for d in [&a1, &a2] {
-        assert!(
-            d.m()
-                .verifications()
-                .iter()
-                .all(|h| h.state() != SasState::Incoming)
-        );
+        assert!(d.m().verifications().iter().all(|h| h.state() != SasState::Incoming));
     }
 
     // both asked, so both may start at once (Android starts on the asking
@@ -872,7 +867,11 @@ async fn sas_crossed_requests_become_one_flow() {
         a1.sync().await;
         a2.sync().await;
     }
-    assert!(matches!(winner.state(), SasState::ShowCodes { .. }), "{:?}", winner.state());
+    assert!(
+        matches!(winner.state(), SasState::ShowCodes { .. }),
+        "{:?}",
+        winner.state()
+    );
     assert_eq!(h1.state(), h2.state());
     h1.confirm().await.unwrap();
     h2.confirm().await.unwrap();

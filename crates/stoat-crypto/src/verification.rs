@@ -434,7 +434,7 @@ impl SasHandle {
     }
 
     fn request(&self) -> Option<VerificationRequest> {
-        self.machine.olm().get_verification_request(&self.user, &self.current())
+        self.machine.olm().get_verification_request(&self.user, self.current())
     }
 
     fn sas(&self) -> Option<Box<Sas>> {
@@ -578,10 +578,13 @@ impl CryptoMachine {
             return Ok(vec![]);
         }
         // their request went with the crossing: no dialog for it
-        self.flows().insert(flow.to_owned(), user.to_owned(), cancelled_crossing());
+        self.flows()
+            .insert(flow.to_owned(), user.to_owned(), cancelled_crossing());
         let ours = (olm.user_id().as_str(), olm.device_id().as_str());
         if ours < (user.as_str(), device) {
-            let again = self.request_verification(&ids::user_ulid(user).ok_or(CryptoError::UnknownDevice)?, device).await?;
+            let again = self
+                .request_verification(&ids::user_ulid(user).ok_or(CryptoError::UnknownDevice)?, device)
+                .await?;
             self.flows().replace(&intent.flow, again.flow_id());
         } else if let Some(i) = self.flows().intent(user, device) {
             i.waiting = true;
